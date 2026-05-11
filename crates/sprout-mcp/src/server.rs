@@ -1011,18 +1011,22 @@ Default kind is 9 (stream message)."
         let mut media_content = String::new();
         if let Some(ref paths) = p.file_paths {
             for path in paths {
-                match crate::upload::upload_file(
+                let auth_tag = self.client.auth_tag_json();
+                let opts = sprout_sdk::upload::UploadOptions {
+                    auth_tag_json: auth_tag.as_deref(),
+                    ..Default::default()
+                };
+                match sprout_sdk::upload::upload_file(
                     self.client.http_client(),
                     self.client.keys(),
                     &self.client.relay_http_url(),
-                    self.client.server_domain().as_deref(),
                     path,
-                    self.client.auth_tag_json().as_deref(),
+                    &opts,
                 )
                 .await
                 {
                     Ok(desc) => {
-                        media_tags.push(crate::upload::build_imeta_tag(&desc));
+                        media_tags.push(sprout_sdk::upload::build_imeta_tag(&desc));
                         if desc.mime_type.starts_with("video/") {
                             media_content.push_str("\n![video](");
                         } else {
@@ -3108,13 +3112,17 @@ The returned URL can be included in messages, or use the file_paths parameter \
 on send_message to upload and attach in one step."
     )]
     pub async fn upload_file(&self, Parameters(p): Parameters<UploadFileParams>) -> String {
-        match crate::upload::upload_file(
+        let auth_tag = self.client.auth_tag_json();
+        let opts = sprout_sdk::upload::UploadOptions {
+            auth_tag_json: auth_tag.as_deref(),
+            ..Default::default()
+        };
+        match sprout_sdk::upload::upload_file(
             self.client.http_client(),
             self.client.keys(),
             &self.client.relay_http_url(),
-            self.client.server_domain().as_deref(),
             &p.file_path,
-            self.client.auth_tag_json().as_deref(),
+            &opts,
         )
         .await
         {

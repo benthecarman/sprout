@@ -4,6 +4,15 @@
 //! signs a kind:24242 Blossom auth event, PUTs to the relay's `/media/upload`
 //! endpoint, and returns a [`BlobDescriptor`].
 //!
+//! # Memory Model
+//!
+//! This implementation buffers the entire file in RAM to compute the SHA-256
+//! hash and reuse the bytes for the HTTP body in a single pass. A two-pass
+//! streaming implementation could hash from disk first, then stream the body
+//! separately — but that adds complexity for marginal benefit given typical
+//! agent upload sizes (images ≤50 MB). For very large videos (approaching
+//! 500 MB), callers should wrap in `spawn_blocking`.
+//!
 //! Requires the `upload` feature.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -21,18 +30,28 @@ pub const ALLOWED_MIMES: &[&str] = &[
     "video/mp4",
 ];
 
-/// Maximum file size for image uploads (50 MB).
+/// Default maximum file size for image uploads (50 MB).
+///
+/// This is a client-side preflight check. The relay may have different limits
+/// configured via `max_image_bytes` in its environment.
 pub const MAX_IMAGE_BYTES: u64 = 50 * 1024 * 1024;
 
-/// Maximum file size for GIF uploads (10 MB).
+/// Default maximum file size for GIF uploads (10 MB).
+///
+/// Matches the relay's default `max_gif_bytes` configuration.
 pub const MAX_GIF_BYTES: u64 = 10 * 1024 * 1024;
 
-/// Maximum file size for video uploads (500 MB).
+/// Default maximum file size for video uploads (500 MB).
+///
+/// This is a client-side preflight check. The relay may have different limits
+/// configured via `max_video_bytes` in its environment.
 pub const MAX_VIDEO_BYTES: u64 = 500 * 1024 * 1024;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 /// Descriptor returned by the relay after a successful upload.
+///
+/// Mirrors the server's `sprout_media::BlobDescriptor` response.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BlobDescriptor {
     /// Public URL of the uploaded blob.
@@ -58,9 +77,26 @@ pub struct BlobDescriptor {
     /// Duration in seconds for video/audio (optional).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration: Option<f64>,
-    /// NIP-71 poster frame URL for video (optional).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub image: Option<String>,
+}
+
+/// Optional configuration for upload behavior.
+///
+/// Use [`UploadOptions::default()`] for standard behavior (auto-detect server
+/// domain from the relay URL, skip server tag for localhost).
+#[derive(Debug, Clone, Default)]
+pub struct UploadOptions<'a> {
+    /// NIP-OA auth tag JSON string for the `x-auth-tag` header.
+    pub auth_tag_json: Option<&'a str>,
+    /// API token (`sprout_*`) for the `X-Auth-Token` header.
+    ///
+    /// Required in production when the relay has `require_auth_token=true`.
+    /// In dev mode (localhost) this can be omitted.
+    pub auth_token: Option<&'a str>,
+    /// Override the BUD-11 server domain tag.
+    ///
+    /// - `None` (default): auto-extracted from the relay URL. Localhost is suppressed.
+    /// - `Some(domain)`: use this exact domain string in the server tag.
+    pub server_domain: Option<&'a str>,
 }
 
 /// Errors from the upload pipeline.
@@ -112,17 +148,16 @@ pub enum UploadError {
 /// Detects MIME from magic bytes, validates type and size, computes SHA-256,
 /// signs a Blossom auth event, and PUTs to the relay.
 ///
-/// `relay_http_url` is the base URL (e.g. `https://relay.sprout.place`).
-/// `auth_tag_json` is an optional NIP-OA auth tag sent as the `x-auth-tag` header.
+/// Takes ownership of `bytes` to avoid an extra copy when building the HTTP body.
 pub async fn upload_bytes(
     http: &reqwest::Client,
     keys: &Keys,
     relay_http_url: &str,
-    bytes: &[u8],
-    auth_tag_json: Option<&str>,
+    bytes: Vec<u8>,
+    opts: &UploadOptions<'_>,
 ) -> Result<BlobDescriptor, UploadError> {
     // 1. Detect MIME from magic bytes — never trust caller-supplied types.
-    let mime = infer::get(bytes)
+    let mime = infer::get(&bytes)
         .map(|t| t.mime_type())
         .unwrap_or("application/octet-stream");
 
@@ -142,14 +177,17 @@ pub async fn upload_bytes(
     }
 
     // 3. SHA-256.
-    let sha256 = hex::encode(Sha256::digest(bytes));
+    let sha256 = hex::encode(Sha256::digest(&bytes));
 
-    // 4. Sign Blossom auth event (kind:24242).
-    let server_domain = extract_server_authority(relay_http_url);
+    // 4. Resolve server domain: explicit override wins, then auto-extract.
+    let auto_domain = extract_server_authority(relay_http_url);
+    let server_domain = opts.server_domain.or(auto_domain.as_deref());
+
+    // 5. Sign Blossom auth event (kind:24242).
     let expiry_secs: u64 = if mime.starts_with("video/") { 3600 } else { 600 };
-    let auth_header = sign_blossom_auth(keys, &sha256, expiry_secs, server_domain.as_deref())?;
+    let auth_header = sign_blossom_auth(keys, &sha256, expiry_secs, server_domain)?;
 
-    // 5. HTTP PUT with generous timeout for large files.
+    // 6. HTTP PUT with generous timeout for large files.
     let upload_timeout = if mime.starts_with("video/") {
         std::time::Duration::from_secs(600)
     } else {
@@ -164,13 +202,16 @@ pub async fn upload_bytes(
         .header("Content-Type", mime)
         .header("X-SHA-256", &sha256);
 
-    if let Some(tag) = auth_tag_json {
+    if let Some(tag) = opts.auth_tag_json {
         req = req.header("x-auth-tag", tag);
     }
+    if let Some(token) = opts.auth_token {
+        req = req.header("X-Auth-Token", token);
+    }
 
-    let resp = req.body(bytes.to_vec()).send().await?;
+    let resp = req.body(bytes).send().await?;
 
-    // 6. Handle response.
+    // 7. Handle response.
     if !resp.status().is_success() {
         let status = resp.status().as_u16();
         let body = resp.text().await.unwrap_or_default();
@@ -184,18 +225,16 @@ pub async fn upload_bytes(
 
 /// Upload a local file to a Sprout relay.
 ///
-/// Reads the file synchronously, then delegates to [`upload_bytes`].
-/// Callers on async runtimes with many concurrent uploads should wrap this
-/// in `tokio::task::spawn_blocking` to avoid blocking worker threads during
-/// the file read.
+/// Validates MIME type from a small prefix before reading the full file,
+/// avoiding unnecessary RAM usage for unsupported types. For large files
+/// on async runtimes, wrap in `tokio::task::spawn_blocking`.
 pub async fn upload_file(
     http: &reqwest::Client,
     keys: &Keys,
     relay_http_url: &str,
     file_path: &str,
-    auth_tag_json: Option<&str>,
+    opts: &UploadOptions<'_>,
 ) -> Result<BlobDescriptor, UploadError> {
-    // Validate path.
     let metadata = std::fs::metadata(file_path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             UploadError::FileNotFound(file_path.to_string())
@@ -207,16 +246,57 @@ pub async fn upload_file(
         return Err(UploadError::NotAFile(file_path.to_string()));
     }
 
+    let file_size = metadata.len();
+
     // Early size rejection before buffering into RAM.
-    if metadata.len() > MAX_VIDEO_BYTES {
+    if file_size > MAX_VIDEO_BYTES {
         return Err(UploadError::FileTooLarge {
-            size: metadata.len(),
+            size: file_size,
             max: MAX_VIDEO_BYTES,
         });
     }
 
-    let bytes = std::fs::read(file_path)?;
-    upload_bytes(http, keys, relay_http_url, &bytes, auth_tag_json).await
+    // Read a small prefix to detect MIME and reject unsupported/oversize files
+    // before committing to a full read. 4 KiB is enough for all magic-byte checks.
+    use std::io::Read;
+    let mut file = std::fs::File::open(file_path)?;
+    let mut prefix = [0u8; 4096];
+    let n = file.read(&mut prefix)?;
+
+    let mime = infer::get(&prefix[..n])
+        .map(|t| t.mime_type())
+        .unwrap_or("application/octet-stream");
+
+    if !ALLOWED_MIMES.contains(&mime) {
+        return Err(UploadError::UnsupportedMime(mime.to_string()));
+    }
+
+    // Type-specific size check before full read.
+    let max_size = match mime {
+        "image/gif" => MAX_GIF_BYTES,
+        m if m.starts_with("video/") => MAX_VIDEO_BYTES,
+        _ => MAX_IMAGE_BYTES,
+    };
+    if file_size > max_size {
+        return Err(UploadError::FileTooLarge {
+            size: file_size,
+            max: max_size,
+        });
+    }
+
+    // Read the remainder with a hard cap — defends against file growth after metadata().
+    let mut bytes = prefix[..n].to_vec();
+    let remaining_limit = max_size.saturating_sub(n as u64) + 1;
+    let mut limited = file.take(remaining_limit);
+    limited.read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max_size {
+        return Err(UploadError::FileTooLarge {
+            size: bytes.len() as u64,
+            max: max_size,
+        });
+    }
+
+    upload_bytes(http, keys, relay_http_url, bytes, opts).await
 }
 
 /// Build a NIP-92 `imeta` tag from a [`BlobDescriptor`].
@@ -241,9 +321,6 @@ pub fn build_imeta_tag(d: &BlobDescriptor) -> Vec<String> {
     }
     if let Some(dur) = d.duration {
         tag.push(format!("duration {dur}"));
-    }
-    if let Some(ref img) = d.image {
-        tag.push(format!("image {img}"));
     }
     tag
 }
@@ -287,9 +364,14 @@ fn sign_blossom_auth(
 /// Extract the server authority from a URL for BUD-11 server tag scoping.
 ///
 /// Returns `host` for default ports, `host:port` for non-default ports.
+/// Returns `None` for localhost/127.0.0.1/::1 (no server tag in dev mode —
+/// avoids rejection when the relay doesn't have `server_domain` configured).
 fn extract_server_authority(url_str: &str) -> Option<String> {
     let parsed = url::Url::parse(url_str).ok()?;
     let host = parsed.host_str()?;
+    if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+        return None;
+    }
     match parsed.port() {
         Some(port) => Some(format!("{host}:{port}")),
         None => Some(host.to_string()),
@@ -314,7 +396,6 @@ mod tests {
             blurhash: Some("LEHV6n".to_string()),
             thumb: Some("https://r.example.com/abc_t.jpg".to_string()),
             duration: None,
-            image: None,
         };
         let tag = build_imeta_tag(&d);
         assert_eq!(tag[0], "imeta");
@@ -329,7 +410,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_imeta_tag_video_with_poster() {
+    fn test_build_imeta_tag_video_with_duration() {
         let d = BlobDescriptor {
             url: "https://r.example.com/vid.mp4".to_string(),
             sha256: "aabb".to_string(),
@@ -340,11 +421,11 @@ mod tests {
             blurhash: None,
             thumb: None,
             duration: Some(42.5),
-            image: Some("https://r.example.com/vid_poster.jpg".to_string()),
         };
         let tag = build_imeta_tag(&d);
         assert!(tag.contains(&"duration 42.5".to_string()));
-        assert!(tag.contains(&"image https://r.example.com/vid_poster.jpg".to_string()));
+        assert!(tag.contains(&"dim 1280x720".to_string()));
+        assert_eq!(tag.len(), 7);
     }
 
     #[test]
@@ -359,7 +440,6 @@ mod tests {
             blurhash: None,
             thumb: None,
             duration: None,
-            image: None,
         };
         let tag = build_imeta_tag(&d);
         assert_eq!(tag.len(), 5);
@@ -372,14 +452,17 @@ mod tests {
             Some("relay.example.com".to_string())
         );
         assert_eq!(
-            extract_server_authority("http://localhost:3000"),
-            Some("localhost:3000".to_string())
+            extract_server_authority("https://relay.example.com:8443"),
+            Some("relay.example.com:8443".to_string())
         );
+        // Localhost suppressed — no server tag in dev mode.
+        assert_eq!(extract_server_authority("http://localhost:3000"), None);
+        assert_eq!(extract_server_authority("http://127.0.0.1:3000"), None);
         assert_eq!(extract_server_authority("not-a-url"), None);
     }
 
     #[test]
-    fn test_size_limits() {
+    fn test_size_limits_are_documented_defaults() {
         assert_eq!(MAX_IMAGE_BYTES, 50 * 1024 * 1024);
         assert_eq!(MAX_GIF_BYTES, 10 * 1024 * 1024);
         assert_eq!(MAX_VIDEO_BYTES, 500 * 1024 * 1024);
@@ -390,5 +473,12 @@ mod tests {
         assert!(ALLOWED_MIMES.contains(&"image/jpeg"));
         assert!(ALLOWED_MIMES.contains(&"video/mp4"));
         assert!(!ALLOWED_MIMES.contains(&"application/pdf"));
+    }
+
+    #[test]
+    fn test_upload_options_default() {
+        let opts = UploadOptions::default();
+        assert!(opts.auth_tag_json.is_none());
+        assert!(opts.server_domain.is_none());
     }
 }

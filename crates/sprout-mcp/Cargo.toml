@@ -14,7 +14,7 @@ path = "src/main.rs"
 [dependencies]
 # Sprout core types
 sprout-core = { workspace = true, features = ["mcp-schema"] }
-sprout-sdk = { workspace = true }
+sprout-sdk = { workspace = true, features = ["upload"] }
 
 # MCP SDK
 rmcp = { workspace = true }
@@ -41,8 +41,6 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 # Crypto
 sha2 = { workspace = true }
 hex = { workspace = true }
-base64 = "0.22"
-infer = "0.19"
 
 # Utilities
 uuid = { workspace = true }
