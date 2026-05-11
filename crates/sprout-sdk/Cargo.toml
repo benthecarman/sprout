@@ -5,7 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Typed Nostr event builders for Sprout operations"
+description = "Typed Nostr event builders and client helpers for Sprout"
+
+[features]
+default = []
+upload = ["dep:reqwest", "dep:sha2", "dep:hex", "dep:infer", "dep:base64", "dep:url"]
 
 [dependencies]
 sprout-core = { workspace = true }
@@ -14,3 +18,11 @@ uuid = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+
+# Upload feature deps (optional)
+reqwest = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+hex = { workspace = true, optional = true }
+infer = { version = "0.19", optional = true }
+base64 = { version = "0.22", optional = true }
+url = { workspace = true, optional = true }

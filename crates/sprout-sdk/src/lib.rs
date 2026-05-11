@@ -1,6 +1,6 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
-//! `sprout-sdk` — typed Nostr event builders for Sprout operations.
+//! `sprout-sdk` — typed Nostr event builders and client helpers for Sprout.
 //!
 //! # Mental Model
 //!
@@ -10,10 +10,16 @@
 //!
 //! Each builder function validates its inputs and returns an [`nostr::EventBuilder`].
 //! The caller signs with their own keys: `builder.sign_with_keys(&keys)?`.
-//! No keys are held here. No network calls are made.
+//!
+//! The optional `upload` feature adds a client-side Blossom upload pipeline
+//! (requires `reqwest`, `sha2`, etc.) — see [`upload`] module.
 
 pub mod builders;
 pub mod nip_oa;
+
+/// Client-side Blossom upload pipeline (requires `upload` feature).
+#[cfg(feature = "upload")]
+pub mod upload;
 
 pub use builders::*;
 

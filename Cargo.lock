@@ -4063,11 +4063,17 @@ dependencies = [
 name = "sprout-sdk"
 version = "0.1.0"
 dependencies = [
+ "base64",
+ "hex",
+ "infer",
  "nostr",
+ "reqwest 0.13.2",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "sprout-core",
  "thiserror 2.0.18",
+ "url",
  "uuid",
 ]
 
