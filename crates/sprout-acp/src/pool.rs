@@ -2240,12 +2240,12 @@ mod tests {
     #[test]
     fn test_collect_prompt_pubkeys_includes_authors_mentions_and_context() {
         let keys = Keys::generate();
-        let p_tag = Tag::parse(&[
+        let p_tag = Tag::parse([
             "p",
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         ])
         .unwrap();
-        let event = EventBuilder::new(Kind::Custom(9), "hello", [p_tag])
+        let event = EventBuilder::new(Kind::Custom(9), "hello").tags([p_tag])
             .sign_with_keys(&keys)
             .unwrap();
         let author_hex = event.pubkey.to_hex();

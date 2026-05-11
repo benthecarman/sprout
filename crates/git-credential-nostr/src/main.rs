@@ -10,7 +10,7 @@ use std::process;
 
 use base64::Engine as _;
 use nostr::nips::nip98::{HttpData, HttpMethod};
-use nostr::{EventBuilder, Keys, UncheckedUrl};
+use nostr::{EventBuilder, Keys};
 use zeroize::Zeroize;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -211,7 +211,7 @@ fn main() {
     };
     raw_key.zeroize();
 
-    let http_data = HttpData::new(UncheckedUrl::from(url.as_str()), method);
+    let http_data = HttpData::new(url::Url::parse(url.as_str()).expect("invalid URL"), method);
     let event = match EventBuilder::http_auth(http_data).sign_with_keys(&keys) {
         Ok(e) => e,
         Err(e) => fail(&format!("failed to sign NIP-98 event: {e}")),

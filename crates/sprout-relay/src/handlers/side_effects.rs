@@ -419,9 +419,9 @@ pub async fn emit_system_message(
     channel_id: Uuid,
     content: serde_json::Value,
 ) -> anyhow::Result<()> {
-    let channel_tag = Tag::parse(&["h", &channel_id.to_string()])?;
+    let channel_tag = Tag::parse(["h", &channel_id.to_string()])?;
 
-    let event = EventBuilder::new(Kind::Custom(40099), content.to_string(), [channel_tag])
+    let event = EventBuilder::new(Kind::Custom(40099), content.to_string()).tags([channel_tag])
         .sign_with_keys(&state.relay_keypair)
         .map_err(|e| anyhow::anyhow!("failed to sign system message: {e}"))?;
 
@@ -453,9 +453,9 @@ pub async fn emit_membership_notification(
     let actor_hex = hex::encode(actor_pubkey);
     let channel_id_str = channel_id.to_string();
 
-    let p_tag = Tag::parse(&["p", &target_hex])
+    let p_tag = Tag::parse(["p", &target_hex])
         .map_err(|e| anyhow::anyhow!("failed to build p tag: {e}"))?;
-    let h_tag = Tag::parse(&["h", &channel_id_str])
+    let h_tag = Tag::parse(["h", &channel_id_str])
         .map_err(|e| anyhow::anyhow!("failed to build h tag: {e}"))?;
 
     let event_type = match notification_kind {
@@ -475,13 +475,10 @@ pub async fn emit_membership_notification(
     })
     .to_string();
 
-    let event = EventBuilder::new(
-        Kind::Custom(notification_kind as u16),
-        content,
-        [p_tag, h_tag],
-    )
-    .sign_with_keys(&state.relay_keypair)
-    .map_err(|e| anyhow::anyhow!("failed to sign membership notification: {e}"))?;
+    let event = EventBuilder::new(Kind::Custom(notification_kind as u16), content)
+        .tags([p_tag, h_tag])
+        .sign_with_keys(&state.relay_keypair)
+        .map_err(|e| anyhow::anyhow!("failed to sign membership notification: {e}"))?;
 
     // Store with channel_id = None → globally scoped, reachable by global subscribers.
     let (stored, was_inserted) = state.db.insert_event(&event, None).await?;
@@ -549,7 +546,7 @@ async fn emit_addressable_discovery_event(
     };
     let ts = now.max(min_ts);
 
-    let event = EventBuilder::new(Kind::Custom(kind as u16), "", tags)
+    let event = EventBuilder::new(Kind::Custom(kind as u16), "").tags(tags)
         .custom_created_at(nostr::Timestamp::from(ts))
         .sign_with_keys(&state.relay_keypair)
         .map_err(|e| anyhow::anyhow!("failed to sign kind:{kind}: {e}"))?;
@@ -585,56 +582,56 @@ pub async fn emit_group_discovery_events(
 
     // ── kind:39000 group metadata ────────────────────────────────────────────
     {
-        let mut tags: Vec<Tag> = vec![Tag::parse(&["d", &group_id])?];
-        tags.push(Tag::parse(&["name", &channel.name])?);
+        let mut tags: Vec<Tag> = vec![Tag::parse(["d", &group_id])?];
+        tags.push(Tag::parse(["name", &channel.name])?);
         if let Some(ref desc) = channel.description {
             if !desc.is_empty() {
-                tags.push(Tag::parse(&["about", desc])?);
+                tags.push(Tag::parse(["about", desc])?);
             }
         }
         if channel.visibility == "private" {
-            tags.push(Tag::parse(&["private"])?);
+            tags.push(Tag::parse(["private"])?);
         } else {
             // Explicit "public" tag complements NIP-29's absence-of-"private" convention,
             // making channel visibility self-describing for clients.
-            tags.push(Tag::parse(&["public"])?);
+            tags.push(Tag::parse(["public"])?);
         }
         // NIP-29 hidden tag: hint to clients not to show DMs in public group lists.
         // Not a security boundary — access control is handled by channel-scoped storage.
         if channel.channel_type == "dm" {
-            tags.push(Tag::parse(&["hidden"])?);
+            tags.push(Tag::parse(["hidden"])?);
             // Include participant pubkeys in kind:39000 for DMs so clients can
             // resolve display names without a separate kind:39002 fetch.
             for m in &members {
                 let pubkey_hex = hex::encode(&m.pubkey);
-                tags.push(Tag::parse(&["p", &pubkey_hex])?);
+                tags.push(Tag::parse(["p", &pubkey_hex])?);
             }
         }
         // Sprout channels always require explicit membership
-        tags.push(Tag::parse(&["closed"])?);
+        tags.push(Tag::parse(["closed"])?);
         // Channel type tag so clients can distinguish stream/forum/dm without inference
-        tags.push(Tag::parse(&["t", &channel.channel_type])?);
+        tags.push(Tag::parse(["t", &channel.channel_type])?);
         // Optional topic / purpose for richer client UX
         if let Some(ref topic) = channel.topic {
             if !topic.is_empty() {
-                tags.push(Tag::parse(&["topic", topic])?);
+                tags.push(Tag::parse(["topic", topic])?);
             }
         }
         if let Some(ref purpose) = channel.purpose {
             if !purpose.is_empty() {
-                tags.push(Tag::parse(&["purpose", purpose])?);
+                tags.push(Tag::parse(["purpose", purpose])?);
             }
         }
         // Archived state — clients use this to hide channels from the sidebar.
         if channel.archived_at.is_some() {
-            tags.push(Tag::parse(&["archived", "true"])?);
+            tags.push(Tag::parse(["archived", "true"])?);
         }
         // Ephemeral channel TTL — clients use this to show countdown timers.
         if let Some(ttl) = channel.ttl_seconds {
-            tags.push(Tag::parse(&["ttl", &ttl.to_string()])?);
+            tags.push(Tag::parse(["ttl", &ttl.to_string()])?);
         }
         if let Some(ref deadline) = channel.ttl_deadline {
-            tags.push(Tag::parse(&["ttl_deadline", &deadline.to_rfc3339()])?);
+            tags.push(Tag::parse(["ttl_deadline", &deadline.to_rfc3339()])?);
         }
         emit_addressable_discovery_event(
             state,
@@ -648,13 +645,13 @@ pub async fn emit_group_discovery_events(
 
     // ── kind:39001 group admins ──────────────────────────────────────────────
     {
-        let mut tags: Vec<Tag> = vec![Tag::parse(&["d", &group_id])?];
+        let mut tags: Vec<Tag> = vec![Tag::parse(["d", &group_id])?];
         for m in members
             .iter()
             .filter(|m| m.role == "owner" || m.role == "admin")
         {
             let pubkey_hex = hex::encode(&m.pubkey);
-            tags.push(Tag::parse(&["p", &pubkey_hex, &m.role])?);
+            tags.push(Tag::parse(["p", &pubkey_hex, &m.role])?);
         }
         emit_addressable_discovery_event(
             state,
@@ -668,12 +665,12 @@ pub async fn emit_group_discovery_events(
 
     // ── kind:39002 group members ─────────────────────────────────────────────
     {
-        let mut tags: Vec<Tag> = vec![Tag::parse(&["d", &group_id])?];
+        let mut tags: Vec<Tag> = vec![Tag::parse(["d", &group_id])?];
         for m in &members {
             let pubkey_hex = hex::encode(&m.pubkey);
             // NIP-29 convention: ["p", pubkey, relay_url, role]. Empty relay_url
             // because the canonical relay is implicit (this event is signed by it).
-            tags.push(Tag::parse(&["p", &pubkey_hex, "", &m.role])?);
+            tags.push(Tag::parse(["p", &pubkey_hex, "", &m.role])?);
         }
         emit_addressable_discovery_event(
             state,
@@ -1802,16 +1799,16 @@ pub async fn publish_nip43_membership_list(state: &Arc<AppState>) -> anyhow::Res
     let mut tags: Vec<Tag> = Vec::with_capacity(members.len() + 1);
 
     // NIP-70 protected-event marker — prevents re-broadcasting by third parties.
-    tags.push(Tag::parse(&["-"]).map_err(|e| anyhow::anyhow!("failed to build '-' tag: {e}"))?);
+    tags.push(Tag::parse(["-"]).map_err(|e| anyhow::anyhow!("failed to build '-' tag: {e}"))?);
 
     for member in &members {
         tags.push(
-            Tag::parse(&["member", &member.pubkey, &member.role])
+            Tag::parse(["member", &member.pubkey, &member.role])
                 .map_err(|e| anyhow::anyhow!("failed to build member tag: {e}"))?,
         );
     }
 
-    let event = EventBuilder::new(Kind::Custom(KIND_NIP43_MEMBERSHIP_LIST as u16), "", tags)
+    let event = EventBuilder::new(Kind::Custom(KIND_NIP43_MEMBERSHIP_LIST as u16), "").tags(tags)
         .sign_with_keys(&state.relay_keypair)
         .map_err(|e| anyhow::anyhow!("failed to sign kind:13534: {e}"))?;
 
@@ -1851,12 +1848,12 @@ async fn publish_nip43_delta(
     let relay_pubkey_hex = state.relay_keypair.public_key().to_hex();
 
     let tags = vec![
-        Tag::parse(&["-"]).map_err(|e| anyhow::anyhow!("failed to build '-' tag: {e}"))?,
-        Tag::parse(&["p", target_pubkey_hex])
+        Tag::parse(["-"]).map_err(|e| anyhow::anyhow!("failed to build '-' tag: {e}"))?,
+        Tag::parse(["p", target_pubkey_hex])
             .map_err(|e| anyhow::anyhow!("failed to build p tag: {e}"))?,
     ];
 
-    let event = EventBuilder::new(Kind::Custom(kind), "", tags)
+    let event = EventBuilder::new(Kind::Custom(kind), "").tags(tags)
         .sign_with_keys(&state.relay_keypair)
         .map_err(|e| anyhow::anyhow!("failed to sign kind:{kind}: {e}"))?;
 

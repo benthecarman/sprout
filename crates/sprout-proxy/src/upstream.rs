@@ -435,18 +435,16 @@ async fn respond_to_auth_challenge(
     inner: &Inner,
     write_tx: &mpsc::Sender<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let relay_tag = Tag::parse(&["relay", &inner.relay_url])
+    let relay_tag = Tag::parse(["relay", &inner.relay_url])
         .map_err(|e| crate::ProxyError::Auth(format!("relay tag: {e}")))?;
-    let challenge_tag = Tag::parse(&["challenge", challenge])
+    let challenge_tag = Tag::parse(["challenge", challenge])
         .map_err(|e| crate::ProxyError::Auth(format!("challenge tag: {e}")))?;
-    let token_tag = Tag::parse(&["auth_token", &inner.api_token])
+    let token_tag = Tag::parse(["auth_token", &inner.api_token])
         .map_err(|e| crate::ProxyError::Auth(format!("auth_token tag: {e}")))?;
 
-    let auth_event = EventBuilder::new(
-        Kind::Authentication, // kind:22242
-        "",
-        [relay_tag, challenge_tag, token_tag],
-    )
+    let auth_event = EventBuilder::new(Kind::Authentication, // kind:22242
+        "")
+    .tags([relay_tag, challenge_tag, token_tag])
     .sign_with_keys(&inner.auth_keys)
     .map_err(|e| crate::ProxyError::Auth(format!("sign auth event: {e}")))?;
 
@@ -483,7 +481,7 @@ mod tests {
 
             // Queue an EVENT message.
             let keys = Keys::generate();
-            let event = EventBuilder::new(Kind::TextNote, "hello", [])
+            let event = EventBuilder::new(Kind::TextNote, "hello")
                 .sign_with_keys(&keys)
                 .unwrap();
             let event_id = event.id;

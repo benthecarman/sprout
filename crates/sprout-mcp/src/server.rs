@@ -1636,10 +1636,10 @@ are not returned — use `get_thread` to fetch the full reply tree for a specifi
         // d-tag = workflow UUID, h-tag = channel_id, content = YAML.
         let workflow_id = uuid::Uuid::new_v4().to_string();
         let tags = vec![
-            Tag::parse(&["d", &workflow_id]).unwrap(),
-            Tag::parse(&["h", &p.channel_id]).unwrap(),
+            Tag::parse(["d", &workflow_id]).unwrap(),
+            Tag::parse(["h", &p.channel_id]).unwrap(),
         ];
-        let builder = EventBuilder::new(k(kind::KIND_WORKFLOW_DEF), &p.yaml_definition, tags);
+        let builder = EventBuilder::new(k(kind::KIND_WORKFLOW_DEF), &p.yaml_definition).tags(tags);
         let event = match self.client.sign_event(builder) {
             Ok(e) => e,
             Err(e) => return format!("Error: failed to sign workflow event: {e}"),
@@ -1666,8 +1666,8 @@ are not returned — use `get_thread` to fetch the full reply tree for a specifi
             return format!("Error: workflow_id '{}' is not a valid UUID", p.workflow_id);
         }
         // Publish a new kind:30620 event with the same d-tag to replace the existing one.
-        let tags = vec![Tag::parse(&["d", &p.workflow_id]).unwrap()];
-        let builder = EventBuilder::new(k(kind::KIND_WORKFLOW_DEF), &p.yaml_definition, tags);
+        let tags = vec![Tag::parse(["d", &p.workflow_id]).unwrap()];
+        let builder = EventBuilder::new(k(kind::KIND_WORKFLOW_DEF), &p.yaml_definition).tags(tags);
         let event = match self.client.sign_event(builder) {
             Ok(e) => e,
             Err(e) => return format!("Error: failed to sign workflow event: {e}"),
@@ -1696,8 +1696,8 @@ are not returned — use `get_thread` to fetch the full reply tree for a specifi
             self.client.pubkey_hex(),
             p.workflow_id
         );
-        let tags = vec![Tag::parse(&["a", &coordinate]).unwrap()];
-        let builder = EventBuilder::new(k(kind::KIND_DELETION), "", tags);
+        let tags = vec![Tag::parse(["a", &coordinate]).unwrap()];
+        let builder = EventBuilder::new(k(kind::KIND_DELETION), "").tags(tags);
         let event = match self.client.sign_event(builder) {
             Ok(e) => e,
             Err(e) => return format!("Error: failed to sign deletion event: {e}"),
@@ -1725,8 +1725,8 @@ are not returned — use `get_thread` to fetch the full reply tree for a specifi
             .inputs
             .unwrap_or(serde_json::Value::Object(Default::default()));
         let content = serde_json::to_string(&inputs).unwrap_or_default();
-        let tags = vec![Tag::parse(&["d", &p.workflow_id]).unwrap()];
-        let builder = EventBuilder::new(k(kind::KIND_WORKFLOW_TRIGGER), &content, tags);
+        let tags = vec![Tag::parse(["d", &p.workflow_id]).unwrap()];
+        let builder = EventBuilder::new(k(kind::KIND_WORKFLOW_TRIGGER), &content).tags(tags);
         let event = match self.client.sign_event(builder) {
             Ok(e) => e,
             Err(e) => return format!("Error: failed to sign trigger event: {e}"),
@@ -1805,8 +1805,8 @@ are not returned — use `get_thread` to fetch the full reply tree for a specifi
         let content = p.note.as_deref().unwrap_or("");
         // The relay expects d-tag = hex(SHA256(token)), not the raw token UUID.
         let token_hash = hex::encode(Sha256::digest(p.approval_token.as_bytes()));
-        let tags = vec![Tag::parse(&["d", &token_hash]).unwrap()];
-        let builder = EventBuilder::new(k(kind_num), content, tags);
+        let tags = vec![Tag::parse(["d", &token_hash]).unwrap()];
+        let builder = EventBuilder::new(k(kind_num), content).tags(tags);
         let event = match self.client.sign_event(builder) {
             Ok(e) => e,
             Err(e) => return format!("Error: failed to sign approval event: {e}"),
@@ -2342,13 +2342,13 @@ with kind:45003 comments)."
         let mut tags: Vec<Tag> = p
             .pubkeys
             .iter()
-            .filter_map(|pk| Tag::parse(&["p", pk]).ok())
+            .filter_map(|pk| Tag::parse(["p", pk]).ok())
             .collect();
         // Add a unique d-tag so the relay can deduplicate.
         let dm_id = uuid::Uuid::new_v4().to_string();
-        tags.push(Tag::parse(&["d", &dm_id]).unwrap());
+        tags.push(Tag::parse(["d", &dm_id]).unwrap());
 
-        let builder = EventBuilder::new(k(kind::KIND_DM_OPEN), "", tags);
+        let builder = EventBuilder::new(k(kind::KIND_DM_OPEN), "").tags(tags);
         let event = match self.client.sign_event(builder) {
             Ok(e) => e,
             Err(e) => return format!("Error: failed to sign open_dm event: {e}"),
@@ -2376,10 +2376,10 @@ with kind:45003 comments)."
         }
         // Command event kind:41011 with h-tag = DM channel, p-tag = new member.
         let tags = vec![
-            Tag::parse(&["h", &p.channel_id]).unwrap(),
-            Tag::parse(&["p", &p.pubkey]).unwrap(),
+            Tag::parse(["h", &p.channel_id]).unwrap(),
+            Tag::parse(["p", &p.pubkey]).unwrap(),
         ];
-        let builder = EventBuilder::new(k(kind::KIND_DM_ADD_MEMBER), "", tags);
+        let builder = EventBuilder::new(k(kind::KIND_DM_ADD_MEMBER), "").tags(tags);
         let event = match self.client.sign_event(builder) {
             Ok(e) => e,
             Err(e) => return format!("Error: failed to sign add_dm_member event: {e}"),
@@ -2449,8 +2449,8 @@ with kind:45003 comments)."
             return format!("Error: {e}");
         }
         // Command event kind:41012 with h-tag = DM channel.
-        let tags = vec![Tag::parse(&["h", &p.channel_id]).unwrap()];
-        let builder = EventBuilder::new(k(kind::KIND_DM_HIDE), "", tags);
+        let tags = vec![Tag::parse(["h", &p.channel_id]).unwrap()];
+        let builder = EventBuilder::new(k(kind::KIND_DM_HIDE), "").tags(tags);
         let event = match self.client.sign_event(builder) {
             Ok(e) => e,
             Err(e) => return format!("Error: failed to sign hide_dm event: {e}"),
@@ -2790,7 +2790,7 @@ with kind:45003 comments)."
     pub async fn set_presence(&self, Parameters(p): Parameters<SetPresenceParams>) -> String {
         // Validate status value.
         // Publish ephemeral presence event (kind:20001).
-        let builder = EventBuilder::new(k(kind::KIND_PRESENCE_UPDATE), p.status.as_str(), []);
+        let builder = EventBuilder::new(k(kind::KIND_PRESENCE_UPDATE), p.status.as_str());
         let event = match self.client.sign_event(builder) {
             Ok(e) => e,
             Err(e) => return format!("Error: failed to sign presence event: {e}"),
@@ -2822,7 +2822,7 @@ with kind:45003 comments)."
         }
         // Store as a kind:10100 (agent profile) replaceable event with the policy in content.
         let content = serde_json::json!({ "channel_add_policy": p.policy }).to_string();
-        let builder = EventBuilder::new(k(kind::KIND_AGENT_PROFILE), &content, []);
+        let builder = EventBuilder::new(k(kind::KIND_AGENT_PROFILE), &content);
         let event = match self.client.sign_event(builder) {
             Ok(e) => e,
             Err(e) => return format!("Error: failed to sign agent profile event: {e}"),

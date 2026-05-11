@@ -588,11 +588,8 @@ impl PairingSession {
         let jitter = rand::random::<u64>() % 31; // 0-30s jitter per NIP-AB §Metadata Privacy
         let ts = nostr::Timestamp::from(now.saturating_sub(jitter));
 
-        EventBuilder::new(
-            Kind::Custom(PAIRING_KIND),
-            &encrypted,
-            [Tag::public_key(peer)],
-        )
+        EventBuilder::new(Kind::Custom(PAIRING_KIND), &encrypted)
+            .tags([Tag::public_key(peer)])
         .custom_created_at(ts)
         .sign_with_keys(&self.keys)
         .map_err(|e| PairingError::SigningError(e.to_string()))
@@ -930,8 +927,8 @@ mod tests {
         let fake_abort = EventBuilder::new(
             Kind::Custom(crate::kind::KIND_PAIRING as u16),
             &encrypted,
-            [Tag::public_key(source.pubkey())],
         )
+        .tags([Tag::public_key(source.pubkey())])
         .sign_with_keys(&rogue)
         .unwrap();
 
@@ -985,8 +982,8 @@ mod tests {
             EventBuilder::new(
                 Kind::Custom(crate::kind::KIND_PAIRING as u16),
                 &encrypted,
-                [Tag::public_key(source.pubkey())],
             )
+            .tags([Tag::public_key(source.pubkey())])
             .sign_with_keys(&keys)
             .unwrap()
         };
@@ -1045,8 +1042,8 @@ mod tests {
         let fake_event = EventBuilder::new(
             Kind::Custom(PAIRING_KIND),
             &encrypted,
-            [Tag::public_key(target.pubkey())],
         )
+        .tags([Tag::public_key(target.pubkey())])
         .sign_with_keys(&rogue_keys)
         .unwrap();
 
@@ -1266,8 +1263,8 @@ mod tests {
         let wrong_event = EventBuilder::new(
             Kind::Custom(PAIRING_KIND),
             &wrong_encrypted,
-            [Tag::public_key(target.pubkey())],
         )
+        .tags([Tag::public_key(target.pubkey())])
         .sign_with_keys(&source.keys)
         .unwrap();
 
@@ -1321,8 +1318,8 @@ mod tests {
         let fail_event = EventBuilder::new(
             Kind::Custom(PAIRING_KIND),
             &fail_encrypted,
-            [Tag::public_key(source.pubkey())],
         )
+        .tags([Tag::public_key(source.pubkey())])
         .sign_with_keys(&target.keys)
         .unwrap();
 

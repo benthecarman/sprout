@@ -91,7 +91,7 @@ mod tests {
 
     fn stored_with_tag(tag: Tag) -> StoredEvent {
         let keys = Keys::generate();
-        let event = EventBuilder::new(Kind::TextNote, "test", [tag])
+        let event = EventBuilder::new(Kind::TextNote, "test").tags([tag])
             .sign_with_keys(&keys)
             .expect("sign");
         StoredEvent::with_received_at(event, Utc::now(), None, true)
@@ -171,13 +171,10 @@ mod tests {
         let keys = Keys::generate();
 
         // Event with NO h-tag but with a stored channel_id.
-        let reaction = EventBuilder::new(
-            Kind::Reaction,
-            "👍",
-            [Tag::event(nostr::EventId::all_zeros())],
-        )
-        .sign_with_keys(&keys)
-        .expect("sign");
+        let reaction = EventBuilder::new(Kind::Reaction, "👍")
+            .tags([Tag::event(nostr::EventId::all_zeros())])
+            .sign_with_keys(&keys)
+            .expect("sign");
         let stored = StoredEvent::with_received_at(reaction, Utc::now(), Some(channel_id), true);
 
         let h_filter = Filter::new().kind(Kind::Reaction).custom_tag(
@@ -203,13 +200,10 @@ mod tests {
         // Event WITH an explicit h-tag: tag is authoritative, channel_id fallback
         // must NOT override it. Prevents cross-channel leakage.
         let other_channel = uuid::Uuid::new_v4();
-        let msg_with_h = EventBuilder::new(
-            Kind::Custom(9),
-            "hello",
-            [Tag::parse(&["h", &other_channel.to_string()]).unwrap()],
-        )
-        .sign_with_keys(&keys)
-        .expect("sign");
+        let msg_with_h = EventBuilder::new(Kind::Custom(9), "hello")
+            .tags([Tag::parse(["h", &other_channel.to_string()]).unwrap()])
+            .sign_with_keys(&keys)
+            .expect("sign");
         // channel_id matches the filter, but the h-tag points elsewhere.
         let stored_with_h =
             StoredEvent::with_received_at(msg_with_h, Utc::now(), Some(channel_id), true);

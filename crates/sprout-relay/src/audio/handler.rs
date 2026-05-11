@@ -595,14 +595,14 @@ async fn emit_participant_event(
 ) {
     let content = serde_json::json!({"ephemeral_channel_id": channel_id.to_string()}).to_string();
 
-    let h_tag = match Tag::parse(&["h", &parent_channel_id.to_string()]) {
+    let h_tag = match Tag::parse(["h", &parent_channel_id.to_string()]) {
         Ok(t) => t,
         Err(e) => {
             warn!("audio: failed to parse h tag: {e}");
             return;
         }
     };
-    let p_tag = match Tag::parse(&["p", participant_pubkey]) {
+    let p_tag = match Tag::parse(["p", participant_pubkey]) {
         Ok(t) => t,
         Err(e) => {
             warn!("audio: failed to parse p tag: {e}");
@@ -611,7 +611,7 @@ async fn emit_participant_event(
     };
     let tags = vec![h_tag, p_tag];
 
-    let event = match EventBuilder::new(kind, content, tags).sign_with_keys(&state.relay_keypair) {
+    let event = match EventBuilder::new(kind, content).tags(tags).sign_with_keys(&state.relay_keypair) {
         Ok(e) => e,
         Err(e) => {
             warn!("audio: failed to sign lifecycle event: {e}");

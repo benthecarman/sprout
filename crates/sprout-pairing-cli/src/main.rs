@@ -463,7 +463,7 @@ where
     };
 
     // Build and send the NIP-42 auth response using the session's ephemeral keys.
-    let relay_url_parsed: url::Url = relay_url
+    let relay_url_parsed: nostr::RelayUrl = relay_url
         .parse()
         .map_err(|e| CliError::Other(format!("invalid relay URL: {e}")))?;
     let auth_event = session

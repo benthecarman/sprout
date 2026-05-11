@@ -718,12 +718,9 @@ async fn synthesize_presence(state: &AppState, filters: &[nostr::Filter]) -> Opt
     let mut events = Vec::with_capacity(presence_map.len());
     for (pubkey_hex, status) in &presence_map {
         // Build a synthetic event: relay-signed, content = status, p-tag = subject.
-        let tags = vec![nostr::Tag::parse(&["p", pubkey_hex]).ok()?];
-        let event = nostr::EventBuilder::new(
-            nostr::Kind::Custom(KIND_PRESENCE_UPDATE as u16),
-            status,
-            tags,
-        )
+        let tags = vec![nostr::Tag::parse(["p", pubkey_hex]).ok()?];
+        let event = nostr::EventBuilder::new(nostr::Kind::Custom(KIND_PRESENCE_UPDATE as u16), status)
+        .tags(tags)
         .custom_created_at(nostr::Timestamp::from(now))
         .sign_with_keys(&state.relay_keypair)
         .ok()?;

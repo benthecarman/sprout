@@ -40,9 +40,9 @@ fn build_user_status_event(
     content: &str,
     extra_tags: Vec<Tag>,
 ) -> nostr::Event {
-    let mut tags = vec![Tag::parse(&["d", d_tag]).unwrap()];
+    let mut tags = vec![Tag::parse(["d", d_tag]).unwrap()];
     tags.extend(extra_tags);
-    EventBuilder::new(Kind::Custom(KIND_USER_STATUS), content, tags)
+    EventBuilder::new(Kind::Custom(KIND_USER_STATUS), content).tags(tags)
         .sign_with_keys(keys)
         .unwrap()
 }
@@ -230,8 +230,8 @@ async fn test_user_status_stale_write_rejected() {
 
     // Publish the "newer" event first (with a future-ish timestamp)
     let newer = {
-        let tags = vec![Tag::parse(&["d", &d_tag]).unwrap()];
-        EventBuilder::new(Kind::Custom(KIND_USER_STATUS), "Newer status", tags)
+        let tags = vec![Tag::parse(["d", &d_tag]).unwrap()];
+        EventBuilder::new(Kind::Custom(KIND_USER_STATUS), "Newer status").tags(tags)
             .custom_created_at(Timestamp::from(nostr::Timestamp::now().as_u64() + 100))
             .sign_with_keys(&keys)
             .unwrap()
@@ -242,8 +242,8 @@ async fn test_user_status_stale_write_rejected() {
 
     // Now try to publish an "older" event with the same d-tag but earlier timestamp
     let older = {
-        let tags = vec![Tag::parse(&["d", &d_tag]).unwrap()];
-        EventBuilder::new(Kind::Custom(KIND_USER_STATUS), "Older status", tags)
+        let tags = vec![Tag::parse(["d", &d_tag]).unwrap()];
+        EventBuilder::new(Kind::Custom(KIND_USER_STATUS), "Older status").tags(tags)
             .custom_created_at(Timestamp::from(nostr::Timestamp::now().as_u64() - 100))
             .sign_with_keys(&keys)
             .unwrap()

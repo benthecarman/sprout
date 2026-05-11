@@ -49,16 +49,12 @@ async fn create_test_channel(keys: &Keys) -> String {
     let channel_uuid = uuid::Uuid::new_v4();
     let channel_name = format!("interop-e2e-{}", channel_uuid);
 
-    let event = EventBuilder::new(
-        Kind::Custom(9007),
-        "",
-        vec![
-            Tag::parse(&["h", &channel_uuid.to_string()]).unwrap(),
-            Tag::parse(&["name", &channel_name]).unwrap(),
-            Tag::parse(&["channel_type", "stream"]).unwrap(),
-            Tag::parse(&["visibility", "open"]).unwrap(),
-        ],
-    )
+    let event = EventBuilder::new(Kind::Custom(9007), "").tags(vec![
+            Tag::parse(["h", &channel_uuid.to_string()]).unwrap(),
+            Tag::parse(["name", &channel_name]).unwrap(),
+            Tag::parse(["channel_type", "stream"]).unwrap(),
+            Tag::parse(["visibility", "open"]).unwrap(),
+        ])
     .sign_with_keys(keys)
     .unwrap();
 
@@ -89,13 +85,10 @@ async fn create_test_channel(keys: &Keys) -> String {
 async fn send_rest_message(keys: &Keys, channel_id: &str, content: &str) -> String {
     let client = reqwest::Client::new();
     let pubkey_hex = keys.public_key().to_hex();
-    let event = EventBuilder::new(
-        Kind::Custom(9),
-        content,
-        vec![Tag::parse(&["h", channel_id]).unwrap()],
-    )
-    .sign_with_keys(keys)
-    .unwrap();
+    let event = EventBuilder::new(Kind::Custom(9), content)
+        .tags(vec![Tag::parse(["h", channel_id]).unwrap()])
+        .sign_with_keys(keys)
+        .unwrap();
     let resp = client
         .post(format!("{}/api/events", relay_http_url()))
         .header("X-Pubkey", &pubkey_hex)
@@ -339,11 +332,11 @@ async fn test_nip10_thread_reply_creates_metadata() {
         .expect("connect");
 
     // Build reply event with NIP-10 e-tag.
-    let h_tag = Tag::parse(&["h", &channel]).expect("h tag");
-    let e_reply_tag = Tag::parse(&["e", &root_event_id, "", "reply"]).expect("e reply tag");
+    let h_tag = Tag::parse(["h", &channel]).expect("h tag");
+    let e_reply_tag = Tag::parse(["e", &root_event_id, "", "reply"]).expect("e reply tag");
 
     let reply_content = format!("reply to root {}", uuid::Uuid::new_v4());
-    let reply_event = EventBuilder::new(Kind::Custom(9), &reply_content, [h_tag, e_reply_tag])
+    let reply_event = EventBuilder::new(Kind::Custom(9), &reply_content).tags([h_tag, e_reply_tag])
         .sign_with_keys(&keys)
         .expect("sign reply");
 
@@ -397,10 +390,10 @@ async fn test_nip10_unknown_parent_rejected() {
     // Use a random 32-byte hex as a nonexistent parent ID.
     let fake_parent_id = hex::encode([0xdeu8; 32]);
 
-    let h_tag = Tag::parse(&["h", &channel]).expect("h tag");
-    let e_reply_tag = Tag::parse(&["e", &fake_parent_id, "", "reply"]).expect("e reply tag");
+    let h_tag = Tag::parse(["h", &channel]).expect("h tag");
+    let e_reply_tag = Tag::parse(["e", &fake_parent_id, "", "reply"]).expect("e reply tag");
 
-    let event = EventBuilder::new(Kind::Custom(9), "orphan reply", [h_tag, e_reply_tag])
+    let event = EventBuilder::new(Kind::Custom(9), "orphan reply").tags([h_tag, e_reply_tag])
         .sign_with_keys(&keys)
         .expect("sign event");
 
@@ -439,18 +432,15 @@ async fn test_nip10_root_mismatch_rejected() {
         .await
         .expect("connect");
 
-    let h_tag = Tag::parse(&["h", &channel]).expect("h tag");
+    let h_tag = Tag::parse(["h", &channel]).expect("h tag");
     // wrong_root as "root" marker, real_parent as "reply" marker — mismatch.
-    let e_root_tag = Tag::parse(&["e", &wrong_root_id, "", "root"]).expect("e root tag");
-    let e_reply_tag = Tag::parse(&["e", &real_parent_id, "", "reply"]).expect("e reply tag");
+    let e_root_tag = Tag::parse(["e", &wrong_root_id, "", "root"]).expect("e root tag");
+    let e_reply_tag = Tag::parse(["e", &real_parent_id, "", "reply"]).expect("e reply tag");
 
-    let event = EventBuilder::new(
-        Kind::Custom(9),
-        "reply with wrong root",
-        [h_tag, e_root_tag, e_reply_tag],
-    )
-    .sign_with_keys(&keys)
-    .expect("sign event");
+    let event = EventBuilder::new(Kind::Custom(9), "reply with wrong root")
+        .tags([h_tag, e_root_tag, e_reply_tag])
+        .sign_with_keys(&keys)
+        .expect("sign event");
 
     let ok = client.send_event(event).await.expect("send event");
 
@@ -487,9 +477,9 @@ async fn test_nip17_gift_wrap_accepted() {
 
     // Sign with a different ephemeral key — not the auth key.
     let ephemeral_keys = Keys::generate();
-    let p_tag = Tag::parse(&["p", &recipient_keys.public_key().to_hex()]).expect("p tag");
+    let p_tag = Tag::parse(["p", &recipient_keys.public_key().to_hex()]).expect("p tag");
 
-    let gift_wrap = EventBuilder::new(Kind::Custom(1059), "encrypted-content", [p_tag])
+    let gift_wrap = EventBuilder::new(Kind::Custom(1059), "encrypted-content").tags([p_tag])
         .sign_with_keys(&ephemeral_keys)
         .expect("sign gift wrap");
 
@@ -599,10 +589,10 @@ async fn test_nip17_gift_wrap_recipient_receives() {
         .expect("client A connect");
 
     let ephemeral_keys = Keys::generate();
-    let p_tag = Tag::parse(&["p", &b_pubkey_hex]).expect("p tag");
+    let p_tag = Tag::parse(["p", &b_pubkey_hex]).expect("p tag");
     let unique_content = format!("gift-wrap-{}", uuid::Uuid::new_v4());
 
-    let gift_wrap = EventBuilder::new(Kind::Custom(1059), &unique_content, [p_tag])
+    let gift_wrap = EventBuilder::new(Kind::Custom(1059), &unique_content).tags([p_tag])
         .sign_with_keys(&ephemeral_keys)
         .expect("sign gift wrap");
 
@@ -797,10 +787,10 @@ async fn test_nip10_thread_reply_not_in_top_level() {
         .expect("connect");
 
     let reply_content = format!("reply-hidden-{}", uuid::Uuid::new_v4());
-    let h_tag = Tag::parse(&["h", &channel]).expect("h tag");
-    let e_reply_tag = Tag::parse(&["e", &root_event_id, "", "reply"]).expect("e reply tag");
+    let h_tag = Tag::parse(["h", &channel]).expect("h tag");
+    let e_reply_tag = Tag::parse(["e", &root_event_id, "", "reply"]).expect("e reply tag");
 
-    let reply_event = EventBuilder::new(Kind::Custom(9), &reply_content, [h_tag, e_reply_tag])
+    let reply_event = EventBuilder::new(Kind::Custom(9), &reply_content).tags([h_tag, e_reply_tag])
         .sign_with_keys(&keys)
         .expect("sign reply");
 
@@ -864,8 +854,8 @@ async fn test_nip17_gift_wrap_not_searchable() {
 
     // 1. Send kind:1059 gift wrap.
     let ephemeral_keys = Keys::generate();
-    let p_tag = Tag::parse(&["p", &keys_b.public_key().to_hex()]).expect("p tag");
-    let gift_wrap = EventBuilder::new(Kind::Custom(1059), &unique_token, [p_tag])
+    let p_tag = Tag::parse(["p", &keys_b.public_key().to_hex()]).expect("p tag");
+    let gift_wrap = EventBuilder::new(Kind::Custom(1059), &unique_token).tags([p_tag])
         .sign_with_keys(&ephemeral_keys)
         .expect("sign gift wrap");
     let ok = client.send_event(gift_wrap).await.expect("send gift wrap");

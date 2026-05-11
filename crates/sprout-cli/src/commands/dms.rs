@@ -29,10 +29,10 @@ pub async fn cmd_open_dm(client: &SproutClient, pubkeys: &[String]) -> Result<()
 
     let mut tags: Vec<Tag> = Vec::new();
     for pk in pubkeys {
-        tags.push(Tag::parse(&["p", pk]).map_err(|e| CliError::Other(format!("tag error: {e}")))?);
+        tags.push(Tag::parse(["p", pk]).map_err(|e| CliError::Other(format!("tag error: {e}")))?);
     }
 
-    let builder = EventBuilder::new(Kind::Custom(41010), "", tags);
+    let builder = EventBuilder::new(Kind::Custom(41010), "").tags(tags);
     let event = client.sign_event(builder)?;
 
     let resp = client.submit_event(event).await?;
@@ -50,11 +50,11 @@ pub async fn cmd_add_dm_member(
     validate_hex64(pubkey)?;
 
     let tags = vec![
-        Tag::parse(&["h", channel_id]).map_err(|e| CliError::Other(format!("tag error: {e}")))?,
-        Tag::parse(&["p", pubkey]).map_err(|e| CliError::Other(format!("tag error: {e}")))?,
+        Tag::parse(["h", channel_id]).map_err(|e| CliError::Other(format!("tag error: {e}")))?,
+        Tag::parse(["p", pubkey]).map_err(|e| CliError::Other(format!("tag error: {e}")))?,
     ];
 
-    let builder = EventBuilder::new(Kind::Custom(41011), "", tags);
+    let builder = EventBuilder::new(Kind::Custom(41011), "").tags(tags);
     let event = client.sign_event(builder)?;
 
     let resp = client.submit_event(event).await?;

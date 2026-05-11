@@ -67,11 +67,11 @@ pub async fn cmd_create_workflow(
     // Generate a unique d-tag for this workflow
     let workflow_id = uuid::Uuid::new_v4().to_string();
     let tags = vec![
-        Tag::parse(&["d", &workflow_id]).map_err(|e| CliError::Other(format!("tag error: {e}")))?,
-        Tag::parse(&["h", channel_id]).map_err(|e| CliError::Other(format!("tag error: {e}")))?,
+        Tag::parse(["d", &workflow_id]).map_err(|e| CliError::Other(format!("tag error: {e}")))?,
+        Tag::parse(["h", channel_id]).map_err(|e| CliError::Other(format!("tag error: {e}")))?,
     ];
 
-    let builder = EventBuilder::new(Kind::Custom(30620), &yaml_definition, tags);
+    let builder = EventBuilder::new(Kind::Custom(30620), &yaml_definition).tags(tags);
     let event = client.sign_event(builder)?;
 
     let resp = client.submit_event(event).await?;
@@ -89,10 +89,10 @@ pub async fn cmd_update_workflow(
     let yaml_definition = read_or_stdin(yaml)?;
 
     let tags =
-        vec![Tag::parse(&["d", workflow_id])
+        vec![Tag::parse(["d", workflow_id])
             .map_err(|e| CliError::Other(format!("tag error: {e}")))?];
 
-    let builder = EventBuilder::new(Kind::Custom(30620), &yaml_definition, tags);
+    let builder = EventBuilder::new(Kind::Custom(30620), &yaml_definition).tags(tags);
     let event = client.sign_event(builder)?;
 
     let resp = client.submit_event(event).await?;
@@ -106,13 +106,13 @@ pub async fn cmd_delete_workflow(client: &SproutClient, workflow_id: &str) -> Re
     let keys = client.keys();
 
     // NIP-09 deletion targeting the parameterized replaceable event
-    let tags = vec![Tag::parse(&[
+    let tags = vec![Tag::parse([
         "a",
         &format!("30620:{}:{}", keys.public_key().to_hex(), workflow_id),
     ])
     .map_err(|e| CliError::Other(format!("tag error: {e}")))?];
 
-    let builder = EventBuilder::new(Kind::Custom(5), "", tags);
+    let builder = EventBuilder::new(Kind::Custom(5), "").tags(tags);
     let event = client.sign_event(builder)?;
 
     let resp = client.submit_event(event).await?;
@@ -128,10 +128,10 @@ pub async fn cmd_trigger_workflow(
     validate_uuid(workflow_id)?;
 
     let tags =
-        vec![Tag::parse(&["d", workflow_id])
+        vec![Tag::parse(["d", workflow_id])
             .map_err(|e| CliError::Other(format!("tag error: {e}")))?];
 
-    let builder = EventBuilder::new(Kind::Custom(46020), "", tags);
+    let builder = EventBuilder::new(Kind::Custom(46020), "").tags(tags);
     let event = client.sign_event(builder)?;
 
     let resp = client.submit_event(event).await?;
@@ -154,10 +154,10 @@ pub async fn cmd_approve_step(
     // The relay expects d-tag = hex(SHA256(token)), not the raw token UUID.
     let token_hash = hex::encode(Sha256::digest(approval_token.as_bytes()));
     let tags =
-        vec![Tag::parse(&["d", &token_hash])
+        vec![Tag::parse(["d", &token_hash])
             .map_err(|e| CliError::Other(format!("tag error: {e}")))?];
 
-    let builder = EventBuilder::new(Kind::Custom(kind), content, tags);
+    let builder = EventBuilder::new(Kind::Custom(kind), content).tags(tags);
     let event = client.sign_event(builder)?;
 
     let resp = client.submit_event(event).await?;

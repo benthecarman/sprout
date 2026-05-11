@@ -781,12 +781,12 @@ mod tests {
         let event = EventBuilder::new(
             Kind::Custom(KIND_AGENT_OBSERVER_FRAME as u16),
             encrypted,
-            [
-                Tag::parse(&["p", &owner.public_key().to_hex()]).expect("p tag"),
-                Tag::parse(&[OBSERVER_AGENT_TAG, &agent.public_key().to_hex()]).expect("agent tag"),
-                Tag::parse(&[OBSERVER_FRAME_TAG, OBSERVER_FRAME_TELEMETRY]).expect("frame tag"),
-            ],
         )
+        .tags([
+            Tag::parse(["p", &owner.public_key().to_hex()]).expect("p tag"),
+            Tag::parse([OBSERVER_AGENT_TAG, &agent.public_key().to_hex()]).expect("agent tag"),
+            Tag::parse([OBSERVER_FRAME_TAG, OBSERVER_FRAME_TELEMETRY]).expect("frame tag"),
+        ])
         .sign_with_keys(&agent)
         .expect("sign event");
 
@@ -811,12 +811,12 @@ mod tests {
         let event = EventBuilder::new(
             Kind::Custom(KIND_AGENT_OBSERVER_FRAME as u16),
             encrypted,
-            [
-                Tag::parse(&["p", &agent.public_key().to_hex()]).expect("p tag"),
-                Tag::parse(&[OBSERVER_AGENT_TAG, &agent.public_key().to_hex()]).expect("agent tag"),
-                Tag::parse(&[OBSERVER_FRAME_TAG, OBSERVER_FRAME_CONTROL]).expect("frame tag"),
-            ],
         )
+        .tags([
+            Tag::parse(["p", &agent.public_key().to_hex()]).expect("p tag"),
+            Tag::parse([OBSERVER_AGENT_TAG, &agent.public_key().to_hex()]).expect("agent tag"),
+            Tag::parse([OBSERVER_FRAME_TAG, OBSERVER_FRAME_CONTROL]).expect("frame tag"),
+        ])
         .sign_with_keys(&owner)
         .expect("sign event");
 
@@ -835,12 +835,12 @@ mod tests {
         let event = EventBuilder::new(
             Kind::Custom(KIND_AGENT_OBSERVER_FRAME as u16),
             "not encrypted",
-            [
-                Tag::parse(&["p", &owner.public_key().to_hex()]).expect("p tag"),
-                Tag::parse(&[OBSERVER_AGENT_TAG, &agent.public_key().to_hex()]).expect("agent tag"),
-                Tag::parse(&[OBSERVER_FRAME_TAG, OBSERVER_FRAME_TELEMETRY]).expect("frame tag"),
-            ],
         )
+        .tags([
+            Tag::parse(["p", &owner.public_key().to_hex()]).expect("p tag"),
+            Tag::parse([OBSERVER_AGENT_TAG, &agent.public_key().to_hex()]).expect("agent tag"),
+            Tag::parse([OBSERVER_FRAME_TAG, OBSERVER_FRAME_TELEMETRY]).expect("frame tag"),
+        ])
         .sign_with_keys(&agent)
         .expect("sign event");
 

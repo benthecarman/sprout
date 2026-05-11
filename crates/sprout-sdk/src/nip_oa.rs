@@ -296,7 +296,7 @@ pub fn parse_auth_tag(json_str: &str) -> Result<Tag, SdkError> {
         )));
     }
 
-    Tag::parse(&["auth", owner_pubkey_hex, conditions, sig_hex])
+    Tag::parse(["auth", owner_pubkey_hex, conditions, sig_hex])
         .map_err(|e| SdkError::InvalidInput(format!("failed to construct Tag: {e}")))
 }
 

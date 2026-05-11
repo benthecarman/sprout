@@ -195,19 +195,19 @@ pub async fn upload_file(
     let exp_str = (now + expiry).to_string();
 
     let mut tags = vec![
-        Tag::parse(&["t", "upload"]).map_err(|e| UploadError::SigningFailed(e.to_string()))?,
-        Tag::parse(&["x", &sha256]).map_err(|e| UploadError::SigningFailed(e.to_string()))?,
-        Tag::parse(&["expiration", &exp_str])
+        Tag::parse(["t", "upload"]).map_err(|e| UploadError::SigningFailed(e.to_string()))?,
+        Tag::parse(["x", &sha256]).map_err(|e| UploadError::SigningFailed(e.to_string()))?,
+        Tag::parse(["expiration", &exp_str])
             .map_err(|e| UploadError::SigningFailed(e.to_string()))?,
     ];
     if let Some(domain) = server_domain {
         tags.push(
-            Tag::parse(&["server", domain])
+            Tag::parse(["server", domain])
                 .map_err(|e| UploadError::SigningFailed(e.to_string()))?,
         );
     }
 
-    let auth_event = EventBuilder::new(Kind::from(24242), "Upload file", tags)
+    let auth_event = EventBuilder::new(Kind::from(24242), "Upload file").tags(tags)
         .sign_with_keys(keys)
         .map_err(|e| UploadError::SigningFailed(e.to_string()))?;
 

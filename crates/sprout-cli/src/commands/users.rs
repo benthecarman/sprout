@@ -167,12 +167,12 @@ pub async fn cmd_set_presence(client: &SproutClient, status: &str) -> Result<(),
     }
 
     let tags =
-        vec![Tag::parse(&["status", status])
+        vec![Tag::parse(["status", status])
             .map_err(|e| CliError::Other(format!("tag error: {e}")))?];
 
     // KIND_PRESENCE_UPDATE (20001) — ephemeral, WS-only. HTTP bridge will reject this
     // until the CLI gains a WebSocket publish path.
-    let builder = EventBuilder::new(Kind::Custom(20001), "", tags);
+    let builder = EventBuilder::new(Kind::Custom(20001), "").tags(tags);
     let event = client.sign_event(builder)?;
 
     let resp = client.submit_event(event).await?;
