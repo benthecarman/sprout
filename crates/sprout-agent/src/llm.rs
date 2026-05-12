@@ -127,7 +127,12 @@ fn anthropic_body(cfg: &Config, history: &[HistoryItem], tools: &[ToolDef]) -> V
                         "name": c.name, "input": c.arguments }));
                 }
                 if content.is_empty() {
-                    content.push(json!({ "type": "text", "text": "" }));
+                    // Assistant turn with no text and no tool calls carries
+                    // zero information. Skip it — Anthropic rejects empty
+                    // text blocks, and emitting a placeholder just defers
+                    // the problem. No tool_use means no tool_result pairing
+                    // constraint, so omitting is safe.
+                    continue;
                 }
                 messages.push(json!({ "role": "assistant", "content": content }));
             }
