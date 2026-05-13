@@ -326,7 +326,12 @@ export function HomeView({
               });
           }}
           onOpenChannel={onOpenChannel}
-          onSendReply={async (content, mentionPubkeys, mediaTags) => {
+          onSendReply={async ({
+            content,
+            mediaTags,
+            mentionPubkeys,
+            parentEventId,
+          }) => {
             const channelId = selectedItem?.item.channelId;
             if (!selectedItem || !channelId || !canReply) {
               throw new Error("Replies are not available for this item.");
@@ -338,7 +343,7 @@ export function HomeView({
               const result = await sendChannelMessage(
                 channelId,
                 content,
-                itemToReply.id,
+                parentEventId,
                 mediaTags,
                 mentionPubkeys,
               );
@@ -357,8 +362,11 @@ export function HomeView({
                         ?.avatarUrl ?? null)
                     : null,
                 content,
+                depth: result.depth,
                 fullTimestampLabel: formatInboxFullTimestamp(result.createdAt),
                 id: result.eventId,
+                parentId: result.parentEventId,
+                rootId: result.rootEventId,
               };
               setLocalRepliesByItemId((current) => ({
                 ...current,

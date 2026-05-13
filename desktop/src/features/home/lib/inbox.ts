@@ -39,8 +39,11 @@ export type InboxReply = {
   authorLabel: string;
   avatarUrl: string | null;
   content: string;
+  depth?: number;
   fullTimestampLabel: string;
   id: string;
+  parentId?: string | null;
+  rootId?: string | null;
 };
 
 export type InboxContextMessage = InboxReply & {

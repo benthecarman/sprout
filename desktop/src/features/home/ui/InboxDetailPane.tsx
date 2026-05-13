@@ -15,6 +15,8 @@ import type {
   InboxItem,
   InboxReply,
 } from "@/features/home/lib/inbox";
+import type { TimelineMessage } from "@/features/messages/types";
+import { MessageActionBar } from "@/features/messages/ui/MessageActionBar";
 import { MessageComposer } from "@/features/messages/ui/MessageComposer";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
@@ -47,13 +49,31 @@ type InboxDetailPaneProps = {
   replies?: InboxReply[];
   onDelete: () => void;
   onOpenChannel: (channelId: string) => void;
-  onSendReply: (
-    content: string,
-    mentionPubkeys: string[],
-    mediaTags?: string[][],
-  ) => Promise<void>;
+  onSendReply: (input: {
+    content: string;
+    mediaTags?: string[][];
+    mentionPubkeys: string[];
+    parentEventId: string;
+  }) => Promise<void>;
   onToggleDone: () => void;
 };
+
+type InboxDisplayMessage = InboxContextMessage & {
+  depth: number;
+};
+
+function toActionBarMessage(message: InboxDisplayMessage): TimelineMessage {
+  return {
+    id: message.id,
+    author: message.authorLabel,
+    avatarUrl: message.avatarUrl,
+    body: message.content,
+    createdAt: 0,
+    depth: message.depth,
+    reactions: [],
+    time: message.fullTimestampLabel,
+  };
+}
 
 export function InboxDetailPane({
   canDelete,
@@ -73,6 +93,8 @@ export function InboxDetailPane({
   onToggleDone,
 }: InboxDetailPaneProps) {
   const detailPaneRef = React.useRef<HTMLElement | null>(null);
+  const [replyTargetId, setReplyTargetId] = React.useState<string | null>(null);
+  const selectedItemId = item?.id ?? null;
 
   const focusComposer = React.useCallback(() => {
     window.requestAnimationFrame(() => {
@@ -83,6 +105,11 @@ export function InboxDetailPane({
       textarea?.focus();
     });
   }, []);
+
+  React.useEffect(() => {
+    void selectedItemId;
+    setReplyTargetId(null);
+  }, [selectedItemId]);
 
   if (!item) {
     return (
@@ -105,13 +132,13 @@ export function InboxDetailPane({
 
   const channelId = item.item.channelId;
   const selectedMessage = messages.find((message) => message.isSelected);
-  const pendingReplyMessages: InboxContextMessage[] = replies.map((reply) => ({
+  const pendingReplyMessages: InboxDisplayMessage[] = replies.map((reply) => ({
     ...reply,
-    depth: (selectedMessage?.depth ?? 0) + 1,
+    depth: reply.depth ?? (selectedMessage?.depth ?? 0) + 1,
     isSelected: false,
     mentionNames: [],
   }));
-  const displayMessages =
+  const displayMessages: InboxDisplayMessage[] =
     messages.length > 0
       ? [...messages, ...pendingReplyMessages]
       : [
@@ -128,6 +155,24 @@ export function InboxDetailPane({
           ...pendingReplyMessages,
         ];
   const hasConversationContext = displayMessages.length > 1;
+  const replyTarget =
+    displayMessages.find((message) => message.id === replyTargetId) ?? null;
+  const composerParentEventId = replyTarget?.id ?? item.id;
+  const composerReplyTarget =
+    replyTarget && replyTarget.id !== item.id
+      ? {
+          author: replyTarget.authorLabel,
+          body: replyTarget.content,
+          id: replyTarget.id,
+        }
+      : null;
+
+  const handleSelectReplyTarget = (message: InboxDisplayMessage) => {
+    setReplyTargetId((currentReplyTargetId) =>
+      currentReplyTargetId === message.id ? null : message.id,
+    );
+    focusComposer();
+  };
 
   return (
     <section
@@ -185,7 +230,10 @@ export function InboxDetailPane({
                   <div className="flex items-center gap-0.5">
                     <HeaderIconAction
                       label="Reply"
-                      onClick={focusComposer}
+                      onClick={() => {
+                        setReplyTargetId(null);
+                        focusComposer();
+                      }}
                       icon={<Reply className="h-4 w-4" />}
                     />
                   </div>
@@ -282,6 +330,18 @@ export function InboxDetailPane({
                         <p className="ml-auto text-xs text-muted-foreground">
                           {message.fullTimestampLabel}
                         </p>
+                        {canReply ? (
+                          <div className="relative ml-1">
+                            <div className="absolute right-0 top-1/2 -translate-y-1/2">
+                              <MessageActionBar
+                                activeReplyTargetId={replyTargetId}
+                                message={toActionBarMessage(message)}
+                                onReply={() => handleSelectReplyTarget(message)}
+                                reactions={[]}
+                              />
+                            </div>
+                          </div>
+                        ) : null}
                       </div>
                       <div className="-mt-0.5">
                         <Markdown
@@ -308,13 +368,24 @@ export function InboxDetailPane({
               disabled={!canReply}
               draftKey={`inbox-reply:${item.id}`}
               isSending={isSendingReply}
-              onSend={onSendReply}
+              onCancelReply={
+                composerReplyTarget ? () => setReplyTargetId(null) : undefined
+              }
+              onSend={(content, mentionPubkeys, mediaTags) =>
+                onSendReply({
+                  content,
+                  mediaTags,
+                  mentionPubkeys,
+                  parentEventId: composerParentEventId,
+                })
+              }
               placeholder={
                 canReply
                   ? `Send reply to ${item.channelLabel ? `#${item.channelLabel} thread` : "channel thread"}`
                   : (disabledReplyReason ??
                     "Replies are not available for this item.")
               }
+              replyTarget={composerReplyTarget}
             />
           </div>
         </div>
