@@ -1128,6 +1128,38 @@ mod tests {
     }
 
     #[test]
+    fn search_dedupe_tiebreak_prefers_lower_event_id_on_equal_created_at() {
+        // NIP-01: when two replaceable events share `created_at`, the one
+        // with the lexicographically lower id is retained. The display name
+        // here is the *only* observable difference between the two profiles,
+        // so we can read which event "won" from the result.
+        let keys = nostr::Keys::generate();
+        let ts = nostr::Timestamp::from(1_000);
+        let a = EventBuilder::new(Kind::from_u16(0), r#"{"display_name":"alpha"}"#)
+            .custom_created_at(ts)
+            .sign_with_keys(&keys)
+            .unwrap();
+        let b = EventBuilder::new(Kind::from_u16(0), r#"{"display_name":"bravo"}"#)
+            .custom_created_at(ts)
+            .sign_with_keys(&keys)
+            .unwrap();
+        let expected = if a.id < b.id { "alpha" } else { "bravo" };
+
+        // Query that matches both events so dedupe must arbitrate.
+        let r1 = filter_and_rank_user_search(&[a.clone(), b.clone()], "a", 5);
+        let r2 = filter_and_rank_user_search(&[b, a], "a", 5);
+
+        assert_eq!(r1.users.len(), 1);
+        assert_eq!(r2.users.len(), 1);
+        assert_eq!(r1.users[0].display_name.as_deref(), Some(expected));
+        assert_eq!(
+            r2.users[0].display_name.as_deref(),
+            Some(expected),
+            "tiebreak must not depend on input order"
+        );
+    }
+
+    #[test]
     fn search_empty_query_returns_empty() {
         let e = ev(0, r#"{"display_name":"anything"}"#, vec![]);
         let r = filter_and_rank_user_search(&[e], "", 10);
