@@ -1,5 +1,6 @@
 mod agent_discovery;
 mod agent_models;
+pub mod agent_provider_settings;
 mod agent_settings;
 mod agents;
 mod canvas;
@@ -23,6 +24,10 @@ mod workspace;
 
 pub use agent_discovery::*;
 pub use agent_models::*;
+pub use agent_provider_settings::{
+    delete_agent_provider_settings, get_agent_provider_env_presence, get_agent_provider_settings,
+    save_agent_provider_settings,
+};
 pub use agent_settings::*;
 pub use agents::*;
 pub use canvas::*;

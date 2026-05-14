@@ -27,3 +27,6 @@ test-results
 *.njsproj
 *.sln
 *.sw?
+
+# Playwright screenshots emitted by the agent-provider spec for PR review.
+screenshots/

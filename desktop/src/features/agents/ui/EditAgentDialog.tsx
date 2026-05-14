@@ -14,6 +14,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/shared/ui/dialog";
+import { resolveAcpProviderId } from "@/features/agents/lib/resolveAcpProviderId";
 import {
   CreateAgentBasicsFields,
   CreateAgentRuntimeFields,
@@ -82,6 +83,16 @@ export function EditAgentDialog({
   function handleOpenChange(next: boolean) {
     onOpenChange(next);
   }
+
+  // Resolve the ACP provider id from the live agent record's command so the
+  // shared `CreateAgentRuntimeFields` knows whether to hide the per-agent
+  // System prompt / Model fields (those are global for sprout-agent and live
+  // in Settings &rsaquo; Agent Provider).
+  const resolvedProviderId = React.useMemo(
+    () => resolveAcpProviderId(agentCommand) ?? "custom",
+    [agentCommand],
+  );
+  const isSproutAgent = resolvedProviderId === "sprout-agent";
 
   const parallelismValid =
     parallelism.trim() === "" ||
@@ -152,8 +163,14 @@ export function EditAgentDialog({
             ? parsedParallelism
             : undefined,
         // Use tri-state: send null to clear, value to set, omit if unchanged.
-        systemPrompt:
-          (systemPrompt.trim() || null) !== agent.systemPrompt
+        // For sprout-agent, the System prompt is managed globally in
+        // Settings > Agent Provider — never carry per-agent values into the
+        // mutation even if stale form state still has them.
+        systemPrompt: isSproutAgent
+          ? agent.systemPrompt !== null
+            ? null
+            : undefined
+          : (systemPrompt.trim() || null) !== agent.systemPrompt
             ? systemPrompt.trim() || null
             : undefined,
         respondTo: respondTo !== agent.respondTo ? respondTo : undefined,
@@ -221,6 +238,12 @@ export function EditAgentDialog({
               onTurnTimeoutChange={setTurnTimeoutSeconds}
               parallelism={parallelism}
               relayUrl={relayUrl}
+              // Always treat Edit as the "custom" path so the agent command
+              // input stays visible — existing Goose/Codex/Claude/sprout-agent
+              // rows need to be editable (e.g. to correct a stale binary
+              // path). The sprout-agent system-prompt hide still works because
+              // `isSproutAgentPath` also matches on the agentCommand value
+              // itself, not only on selectedProviderId.
               selectedProviderId="custom"
               systemPrompt={systemPrompt}
               turnTimeoutSeconds={turnTimeoutSeconds}

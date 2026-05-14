@@ -5,6 +5,7 @@ import {
   Check,
   Download,
   Keyboard,
+  KeyRound,
   LayoutTemplate,
   LockKeyhole,
   MonitorCog,
@@ -28,6 +29,7 @@ import {
   useTheme,
 } from "@/shared/theme/ThemeProvider";
 import { SYNTAX_THEMES, isLightTheme } from "@/shared/theme/theme-loader";
+import { AgentProviderSettingsCard } from "./AgentProviderSettingsCard";
 import { ChannelTemplatesSettingsCard } from "./ChannelTemplatesSettingsCard";
 import { DoctorSettingsPanel } from "./DoctorSettingsPanel";
 import { KeyboardShortcutsCard } from "./KeyboardShortcutsCard";
@@ -41,6 +43,7 @@ export type SettingsSection =
   | "profile"
   | "notifications"
   | "agents"
+  | "agent-provider"
   | "channel-templates"
   | "appearance"
   | "shortcuts"
@@ -86,6 +89,11 @@ export const settingsSections: SettingsSectionDescriptor[] = [
     value: "agents",
     label: "Agents",
     icon: Bot,
+  },
+  {
+    value: "agent-provider",
+    label: "Agent Provider",
+    icon: KeyRound,
   },
   {
     value: "channel-templates",
@@ -282,6 +290,8 @@ export function renderSettingsSection(
       );
     case "agents":
       return <PreventSleepSettingsCard />;
+    case "agent-provider":
+      return <AgentProviderSettingsCard />;
     case "channel-templates":
       return <ChannelTemplatesSettingsCard />;
     case "appearance":

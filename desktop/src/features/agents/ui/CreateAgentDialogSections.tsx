@@ -1,3 +1,4 @@
+import { isSproutAgentPath } from "@/features/agents/lib/resolveAcpProviderId";
 import type { AcpProvider, ManagedAgentPrereqs } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
 import { Input } from "@/shared/ui/input";
@@ -297,25 +298,35 @@ export function CreateAgentRuntimeFields({
         </p>
       </div>
 
-      <div className="space-y-1.5">
-        <label className="text-sm font-medium" htmlFor="agent-system-prompt">
-          System prompt override
-        </label>
-        <Textarea
-          aria-describedby="help-agent-system-prompt"
-          data-testid="agent-system-prompt-input"
-          id="agent-system-prompt"
-          onChange={(event) => onSystemPromptChange(event.target.value)}
-          placeholder="Leave blank to send no ACP system prompt"
-          value={systemPrompt}
-        />
-        <p
-          className="text-xs text-muted-foreground"
-          id="help-agent-system-prompt"
+      {isSproutAgentPath({ selectedProviderId, agentCommand }) ? (
+        <div
+          className="rounded-2xl border border-border/70 bg-background/70 px-4 py-3 text-sm text-muted-foreground"
+          data-testid="agent-system-prompt-sprout-agent-note"
         >
-          Blank means no override. sprout-acp will not add a [System] prompt.
-        </p>
-      </div>
+          The system prompt for sprout-agent is configured globally in Settings
+          &rsaquo; Agent Provider, not per-agent.
+        </div>
+      ) : (
+        <div className="space-y-1.5">
+          <label className="text-sm font-medium" htmlFor="agent-system-prompt">
+            System prompt override
+          </label>
+          <Textarea
+            aria-describedby="help-agent-system-prompt"
+            data-testid="agent-system-prompt-input"
+            id="agent-system-prompt"
+            onChange={(event) => onSystemPromptChange(event.target.value)}
+            placeholder="Leave blank to send no ACP system prompt"
+            value={systemPrompt}
+          />
+          <p
+            className="text-xs text-muted-foreground"
+            id="help-agent-system-prompt"
+          >
+            Blank means no override. sprout-acp will not add a [System] prompt.
+          </p>
+        </div>
+      )}
     </>
   );
 }

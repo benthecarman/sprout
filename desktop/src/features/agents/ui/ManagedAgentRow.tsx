@@ -15,6 +15,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { useAppShell } from "@/app/AppShellContext";
+import { isSproutAgent } from "@/features/agents/lib/resolveAcpProviderId";
 import { PresenceDot } from "@/features/presence/ui/PresenceBadge";
 import { Badge } from "@/shared/ui/badge";
 import type {
@@ -74,6 +76,9 @@ export function ManagedAgentRow({
   const isLocal = agent.backend.type === "local";
   const runtimeSource =
     agent.backend.type === "provider" ? `Provider ${agent.backend.id}` : null;
+  // sprout-agent's model is managed globally in Settings > Agent Provider, so
+  // hide the per-agent ModelPicker and let `RuntimeBlock` surface a link there.
+  const isSproutAgentRow = isSproutAgent(agent.agentCommand);
   const personaLabel = agent.personaId
     ? (personaLabelsById[agent.personaId] ?? null)
     : null;
@@ -147,8 +152,15 @@ export function ManagedAgentRow({
           </div>
         )}
 
-        <div className="flex shrink-0 items-start gap-2 lg:pt-0.5">
-          <ModelPicker agent={agent} />
+        <div
+          className="flex shrink-0 items-start gap-2 lg:pt-0.5"
+          data-testid={`managed-agent-row-actions-${agent.pubkey}`}
+        >
+          {isSproutAgentRow ? null : (
+            <div data-testid={`managed-agent-model-picker-${agent.pubkey}`}>
+              <ModelPicker agent={agent} />
+            </div>
+          )}
           <AgentActionsMenu
             agent={agent}
             isActionPending={isActionPending}
@@ -279,6 +291,12 @@ function RuntimeBlock({
   agent: ManagedAgent;
   runtimeSource: string | null;
 }) {
+  const isSprout = isSproutAgent(agent.agentCommand);
+  const { openSettings } = useAppShell();
+  const showRuntimeSource = runtimeSource !== null;
+  // For sprout-agent we don't render the per-agent model badge — model is set
+  // globally in Settings > Agent Provider. We surface a small link there.
+  const showAgentModelBadge = !isSprout && agent.model !== null;
   return (
     <div className="space-y-1 lg:pt-0.5">
       <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground lg:hidden">
@@ -287,10 +305,38 @@ function RuntimeBlock({
       <p className="truncate font-mono text-xs text-foreground">
         {agent.agentCommand}
       </p>
-      {runtimeSource || agent.model ? (
+      {showRuntimeSource || showAgentModelBadge || isSprout ? (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-          {runtimeSource ? <span>{runtimeSource}</span> : null}
-          {agent.model ? <span>{agent.model}</span> : null}
+          {showRuntimeSource ? <span>{runtimeSource}</span> : null}
+          {showAgentModelBadge ? <span>{agent.model}</span> : null}
+          {isSprout ? (
+            // The outer row is already a <button> that toggles the log
+            // panel, so we can't nest a real <button> here — browsers
+            // auto-split the markup, and the click would bubble up and
+            // toggle the row too. Use a span with role="button" and stop
+            // propagation so this acts as its own focusable activator
+            // without disturbing the row.
+            // biome-ignore lint/a11y/useSemanticElements: intentional — nesting a real <button> inside the outer row <button> is invalid HTML and the browser auto-splits it.
+            <span
+              className="cursor-pointer text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+              data-testid="managed-agent-row-open-agent-provider-settings"
+              onClick={(event) => {
+                event.stopPropagation();
+                openSettings("agent-provider");
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  openSettings("agent-provider");
+                }
+              }}
+              role="button"
+              tabIndex={0}
+            >
+              Model managed in Settings &rsaquo; Agent Provider
+            </span>
+          ) : null}
         </div>
       ) : null}
     </div>

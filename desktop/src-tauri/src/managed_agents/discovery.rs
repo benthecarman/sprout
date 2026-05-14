@@ -132,14 +132,31 @@ fn normalize_command_identity(command: &str) -> String {
 }
 
 pub(crate) fn known_acp_provider(command: &str) -> Option<&'static KnownAcpProvider> {
-    let normalized = normalize_command_identity(command);
+    // Try matching the command as-is first. This preserves whitespace-bearing
+    // aliases like "Claude Code" (normalize_command_identity maps the space
+    // to `-`, yielding the canonical `claude-code`).
+    if let Some(p) = try_match_provider(&normalize_command_identity(command)) {
+        return Some(p);
+    }
+    // Fallback: some callers (or sloppy user input) pass an args-bearing
+    // command like `sprout-agent --verbose`. Strip everything after the
+    // first whitespace and try again. This must come AFTER the alias path
+    // above so "Claude Code" still resolves to claude-code rather than
+    // failing to match the lone token "Claude".
+    let head = command.trim().split_whitespace().next().unwrap_or("");
+    if !head.is_empty() && head != command.trim() {
+        return try_match_provider(&normalize_command_identity(head));
+    }
+    None
+}
 
+fn try_match_provider(normalized: &str) -> Option<&'static KnownAcpProvider> {
     KNOWN_ACP_PROVIDERS.iter().find(|provider| {
         normalized == provider.id
             || provider
                 .commands
                 .iter()
-                .any(|command| normalized == normalize_command_identity(command))
+                .any(|command| *normalized == normalize_command_identity(command))
             || provider.aliases.iter().any(|alias| normalized == *alias)
     })
 }

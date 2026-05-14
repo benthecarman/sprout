@@ -46,7 +46,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 nostr = { version = "0.37", features = ["nip44"] }
 nostr-compat = { package = "nostr", version = "0.36" }
-zeroize = "1"
+zeroize = { version = "1", features = ["zeroize_derive"] }
 reqwest = { version = "0.13", features = ["json", "query", "stream"] }
 url = "2"
 sprout-core = { path = "../../crates/sprout-core" }

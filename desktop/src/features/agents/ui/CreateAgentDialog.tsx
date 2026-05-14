@@ -7,6 +7,7 @@ import {
   useCreateManagedAgentMutation,
   useManagedAgentPrereqsQuery,
 } from "@/features/agents/hooks";
+import { isSproutAgentPath } from "@/features/agents/lib/resolveAcpProviderId";
 import { probeBackendProvider } from "@/shared/api/tauri";
 import type {
   BackendProviderProbeResult,
@@ -347,7 +348,17 @@ export function CreateAgentDialog({
               Number.parseInt(parallelism, 10) > 0
                 ? Number.parseInt(parallelism, 10)
                 : undefined,
-            systemPrompt: systemPrompt.trim() || undefined,
+            // sprout-agent's System prompt is managed globally in
+            // Settings > Agent Provider — never persist per-agent values for
+            // it, even if stale form state still has them. Check both the
+            // provider dropdown selection AND the resolved agent command
+            // (covers the "Custom" provider + sprout-agent binary path case).
+            systemPrompt: isSproutAgentPath({
+              selectedProviderId,
+              agentCommand: agentCommand.trim(),
+            })
+              ? undefined
+              : systemPrompt.trim() || undefined,
             spawnAfterCreate,
             startOnAppLaunch,
             backend: { type: "local" },

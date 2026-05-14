@@ -4,6 +4,7 @@ type SettingsSection =
   | "profile"
   | "notifications"
   | "agents"
+  | "agent-provider"
   | "appearance"
   | "shortcuts"
   | "tokens"

@@ -49,6 +49,32 @@ type MockCommandAvailability = {
   resolvedPath?: string | null;
 };
 
+type MockAgentProviderSettingsRecord = {
+  storedPubkey: string;
+  view: {
+    provider: "anthropic" | "openai";
+    model: string;
+    baseUrl: string;
+    anthropicApiVersion: string | null;
+    systemPrompt: string | null;
+    maxRounds: number | null;
+    maxOutputTokens: number | null;
+    llmTimeoutSecs: number | null;
+    toolTimeoutSecs: number | null;
+    maxHistoryBytes: number | null;
+    detectedProviderId: string;
+    detectionOverridden: boolean;
+    apiKeyPresent: boolean;
+    apiKeyPreview: string | null;
+  };
+};
+
+type MockAgentProviderEnvPresence = {
+  sproutAgentProvider?: boolean;
+  anthropicApiKey?: boolean;
+  openaiCompatApiKey?: boolean;
+};
+
 type MockBridgeOptions = {
   acpProviders?: MockAcpProvider[];
   managedAgentPrereqs?: {
@@ -58,6 +84,9 @@ type MockBridgeOptions = {
   profileReadDelayMs?: number;
   profileReadError?: string;
   profileUpdateError?: string;
+  agentProviderSettings?: MockAgentProviderSettingsRecord | null;
+  agentProviderSettingsLoadError?: string;
+  agentProviderEnvPresence?: MockAgentProviderEnvPresence;
 };
 
 type BridgeOptions = {

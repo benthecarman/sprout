@@ -26,6 +26,36 @@ type MockCommandAvailability = {
   resolvedPath?: string | null;
 };
 
+type MockAgentProviderSettingsRecord = {
+  // Stored "envelope" key — pubkey the encrypted record was written for.
+  // Drives the identity_mismatch path when the active identity differs.
+  storedPubkey: string;
+  // What the IPC view returns. The mock bridge stores this directly — the
+  // real Tauri command decrypts in Rust and returns a redacted view.
+  view: {
+    provider: "anthropic" | "openai";
+    model: string;
+    baseUrl: string;
+    anthropicApiVersion: string | null;
+    systemPrompt: string | null;
+    maxRounds: number | null;
+    maxOutputTokens: number | null;
+    llmTimeoutSecs: number | null;
+    toolTimeoutSecs: number | null;
+    maxHistoryBytes: number | null;
+    detectedProviderId: string;
+    detectionOverridden: boolean;
+    apiKeyPresent: boolean;
+    apiKeyPreview: string | null;
+  };
+};
+
+type MockAgentProviderEnvPresence = {
+  sproutAgentProvider?: boolean;
+  anthropicApiKey?: boolean;
+  openaiCompatApiKey?: boolean;
+};
+
 type E2eConfig = {
   mode?: "mock" | "relay";
   mock?: {
@@ -37,6 +67,14 @@ type E2eConfig = {
     profileReadDelayMs?: number;
     profileReadError?: string;
     profileUpdateError?: string;
+    // Pre-seeded Agent Provider settings record. If absent, the mock store
+    // starts empty and `get_agent_provider_settings` returns { status: "none" }.
+    agentProviderSettings?: MockAgentProviderSettingsRecord | null;
+    // If set, `get_agent_provider_settings` throws with this message — drives
+    // the corrupt-envelope load-error banner in the UI.
+    agentProviderSettingsLoadError?: string;
+    // Booleans returned by `get_agent_provider_env_presence`. Defaults to all-false.
+    agentProviderEnvPresence?: MockAgentProviderEnvPresence;
   };
   relayHttpUrl?: string;
   relayWsUrl?: string;
@@ -1080,6 +1118,13 @@ let mockRelayMembers: RawRelayMember[] = [];
 const mockSockets = new Map<number, MockSocket>();
 const realSockets = new Map<number, WebSocket>();
 let mockManagedAgents: MockManagedAgent[] = [];
+// Mock Agent Provider settings store. Keyed by the active identity pubkey so
+// switching identities surfaces the same identity_mismatch behavior the real
+// Rust backend produces when the on-disk envelope's pubkey differs.
+const mockAgentProviderSettings = new Map<
+  string,
+  MockAgentProviderSettingsRecord
+>();
 let mockPersonas: RawPersona[] = [];
 let mockTeams: RawTeam[] = [];
 let mockRelayAgents: RawRelayAgent[] = [
@@ -1154,6 +1199,14 @@ function resetMockWorkflows() {
   mockWorkflows.length = 0;
   mockWorkflowRuns = [];
   mockWorkflowIdCounter = 0;
+}
+
+function resetMockAgentProviderSettings(config: E2eConfig | undefined) {
+  mockAgentProviderSettings.clear();
+  const seed = config?.mock?.agentProviderSettings;
+  if (seed) {
+    mockAgentProviderSettings.set(seed.storedPubkey, seed);
+  }
 }
 
 function parseWorkflowDefinition(
@@ -4493,6 +4546,7 @@ export function maybeInstallE2eTauriMocks() {
   resetMockPersonas();
   resetMockTeams();
   resetMockWorkflows();
+  resetMockAgentProviderSettings(config);
   mockWindows("main");
   window.__SPROUT_E2E_COMMANDS__ = [];
   window.__SPROUT_E2E_WEBVIEW_ZOOM__ = 1;
@@ -4916,6 +4970,149 @@ export function maybeInstallE2eTauriMocks() {
       case "plugin:event|listen":
         // Tauri event system (pairing, huddle) — no-op in e2e, return unlisten fn ID
         return Math.floor(Math.random() * 1_000_000);
+      case "get_agent_provider_settings": {
+        const loadError = config?.mock?.agentProviderSettingsLoadError;
+        if (loadError) {
+          throw new Error(loadError);
+        }
+        const activePubkey = (identity ?? DEFAULT_MOCK_IDENTITY).pubkey;
+        // The real backend reads the on-disk envelope and dispatches by the
+        // envelope's pubkey; we walk the map (it holds 0 or 1 entries) so
+        // tests can plant a record under a different pubkey to drive the
+        // identity_mismatch path.
+        const first = mockAgentProviderSettings.values().next();
+        if (first.done) return { status: "none" };
+        const record = first.value;
+        if (record.storedPubkey !== activePubkey) {
+          return {
+            status: "identity_mismatch",
+            storedPubkey: record.storedPubkey,
+          };
+        }
+        return { status: "ok", view: record.view };
+      }
+      case "save_agent_provider_settings": {
+        const activePubkey = (identity ?? DEFAULT_MOCK_IDENTITY).pubkey;
+        const input = (
+          payload as {
+            input: {
+              provider: "anthropic" | "openai";
+              apiKey: string | null;
+              model: string;
+              baseUrl: string;
+              anthropicApiVersion: string | null;
+              systemPrompt: string | null;
+              maxRounds: number | null;
+              maxOutputTokens: number | null;
+              llmTimeoutSecs: number | null;
+              toolTimeoutSecs: number | null;
+              maxHistoryBytes: number | null;
+              detectedProviderId: string;
+              detectionOverridden: boolean;
+            };
+          }
+        ).input;
+        // Find existing record under any key — if it's under the active
+        // pubkey, we may be preserving the previous api key; if it's under
+        // a different pubkey (identity mismatch state), saving overwrites
+        // with the new identity (same atomic-rename semantics as Rust).
+        const existing = (() => {
+          for (const value of mockAgentProviderSettings.values()) {
+            return value;
+          }
+          return null;
+        })();
+        // Validate matching the Rust contract.
+        if (input.apiKey === "") {
+          throw new Error("API key cannot be empty");
+        }
+        if (input.apiKey === null) {
+          if (!existing) {
+            throw new Error("API key required");
+          }
+          // For "preserve key" the existing record must match on
+          // (provider, detected_provider_id, base-URL origin).
+          const sameProvider = existing.view.provider === input.provider;
+          const sameDetected =
+            existing.view.detectedProviderId === input.detectedProviderId;
+          const sameOrigin = (() => {
+            try {
+              const a = new URL(existing.view.baseUrl);
+              const b = new URL(input.baseUrl);
+              return (
+                a.protocol === b.protocol &&
+                a.hostname.toLowerCase() === b.hostname.toLowerCase() &&
+                (a.port || (a.protocol === "https:" ? "443" : "80")) ===
+                  (b.port || (b.protocol === "https:" ? "443" : "80"))
+              );
+            } catch {
+              return false;
+            }
+          })();
+          if (!sameProvider || !sameDetected || !sameOrigin) {
+            throw new Error(
+              "Provider, issuer, or base URL changed — re-enter API key",
+            );
+          }
+        }
+        // Mirror the Rust `compute_preview` contract: suppress the preview
+        // entirely for keys shorter than 8 chars (never return the full
+        // key). Drift from the real backend was a codex review #2 finding
+        // because it masked preview regressions in Playwright runs.
+        const apiKey = input.apiKey;
+        const apiKeyPreview =
+          apiKey === null
+            ? (existing?.view.apiKeyPreview ?? null)
+            : apiKey.length >= 8
+              ? apiKey.slice(-4)
+              : null;
+        // Overwrite: clear any record under a stale pubkey (identity-mismatch
+        // recovery) and write under the active pubkey.
+        mockAgentProviderSettings.clear();
+        mockAgentProviderSettings.set(activePubkey, {
+          storedPubkey: activePubkey,
+          view: {
+            provider: input.provider,
+            model: input.model,
+            baseUrl: input.baseUrl,
+            anthropicApiVersion: input.anthropicApiVersion,
+            systemPrompt: input.systemPrompt,
+            maxRounds: input.maxRounds,
+            maxOutputTokens: input.maxOutputTokens,
+            llmTimeoutSecs: input.llmTimeoutSecs,
+            toolTimeoutSecs: input.toolTimeoutSecs,
+            maxHistoryBytes: input.maxHistoryBytes,
+            detectedProviderId: input.detectedProviderId,
+            detectionOverridden: input.detectionOverridden,
+            apiKeyPresent: true,
+            apiKeyPreview,
+          },
+        });
+        return null;
+      }
+      case "delete_agent_provider_settings":
+        mockAgentProviderSettings.clear();
+        return null;
+      case "get_agent_provider_env_presence": {
+        const env = activeConfig?.mock?.agentProviderEnvPresence ?? {};
+        return {
+          sproutAgentProvider: env.sproutAgentProvider ?? false,
+          anthropicApiKey: env.anthropicApiKey ?? false,
+          openaiCompatApiKey: env.openaiCompatApiKey ?? false,
+        };
+      }
+      case "nip44_encrypt_to_self":
+        // Identity pass-through. Real backend uses NIP-44 v2 self-encryption;
+        // the mock keeps payloads round-trippable without secrets.
+        return btoa(
+          unescape(
+            encodeURIComponent((payload as { plaintext: string }).plaintext),
+          ),
+        );
+      case "nip44_decrypt_from_self":
+        return decodeURIComponent(
+          escape(atob((payload as { ciphertext: string }).ciphertext)),
+        );
       default:
         throw new Error(`Unsupported mocked Tauri command: ${command}`);
     }

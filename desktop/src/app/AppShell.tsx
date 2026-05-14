@@ -563,6 +563,7 @@ export function AppShell() {
             openChannelManagement: () => {
               setIsChannelManagementOpen(true);
             },
+            openSettings: handleOpenSettings,
           }}
         >
           <HuddleProvider>

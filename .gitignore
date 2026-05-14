@@ -52,3 +52,4 @@ doc/
 # Local identity files
 identity.key
 **/identity.key
+.review-logs/

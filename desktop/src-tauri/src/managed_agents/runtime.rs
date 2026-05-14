@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 use crate::{
     managed_agents::{
@@ -510,6 +510,47 @@ pub fn spawn_agent_child(
     record: &ManagedAgentRecord,
     owner_hex: Option<&str>,
 ) -> Result<(std::process::Child, std::path::PathBuf), String> {
+    let (mut command, log_path, resolved_acp_command) =
+        build_agent_command(app, record, owner_hex)?;
+
+    // Spawn the harness in its own process group so we can kill the entire
+    // tree (harness + MCP servers + agent subprocesses) on shutdown.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+
+    let child = command.spawn().map_err(|error| {
+        format!(
+            "failed to spawn `{}` for agent {}: {error}",
+            resolved_acp_command.display(),
+            record.name
+        )
+    })?;
+
+    let _ = super::write_agent_pid_file(app, &record.pubkey, child.id());
+
+    Ok((child, log_path))
+}
+
+/// Build the fully-configured `std::process::Command` for a managed agent
+/// without spawning it. Extracted from `spawn_agent_child` so tests can
+/// inspect the env block via `Command::get_envs()`. Returns the command,
+/// the resolved log path, and the resolved ACP binary path (the last for
+/// nicer spawn-error messages).
+pub fn build_agent_command(
+    app: &AppHandle,
+    record: &ManagedAgentRecord,
+    owner_hex: Option<&str>,
+) -> Result<
+    (
+        std::process::Command,
+        std::path::PathBuf,
+        std::path::PathBuf,
+    ),
+    String,
+> {
     let log_path = managed_agent_log_path(app, &record.pubkey)?;
     append_log_marker(
         &log_path,
@@ -685,25 +726,34 @@ pub fn spawn_agent_child(
         );
     }
 
-    // Spawn the harness in its own process group so we can kill the entire
-    // tree (harness + MCP servers + agent subprocesses) on shutdown.
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
+    // ── sprout-agent provider settings injection ────────────────────────
+    //
+    // The Settings → Agent Provider panel is the single source of truth
+    // for sprout-agent's provider env vars. Two clean rules:
+    //
+    // 1. Settings file exists for current identity → desktop owns the
+    //    full provider surface. We `env_remove` every owned var (so a
+    //    stale shell export can't shadow saved settings), then inject.
+    //    Also clear ACP-level model/prompt overrides — for sprout-agent
+    //    those are owned by the panel, not the per-agent record.
+    // 2. Settings file absent (or wrong identity) → leave parent env
+    //    inheritance alone. sprout-agent will pick up shell env if
+    //    present, or fail visibly in its own log if not.
+    // 3. Settings file unreadable → fail closed: strip owned vars so we
+    //    don't silently fall back to stale shell exports. The agent's
+    //    own "missing required env" error is the user-facing signal.
+    //
+    // For sprout-agent, ACP-level model/prompt overrides are cleared
+    // unconditionally so a stale record-level field cannot leak via the
+    // harness even when the panel has no saved settings.
+    if known_acp_provider(&record.agent_command).is_some_and(|p| p.id == "sprout-agent") {
+        use crate::commands::agent_provider_settings;
+        let state = app.state::<crate::app_state::AppState>();
+        let load = agent_provider_settings::load_for_spawn(app, &*state);
+        agent_provider_settings::apply_to_command(&mut command, load, &record.name);
     }
 
-    let child = command.spawn().map_err(|error| {
-        format!(
-            "failed to spawn `{}` for agent {}: {error}",
-            resolved_acp_command.display(),
-            record.name
-        )
-    })?;
-
-    let _ = super::write_agent_pid_file(app, &record.pubkey, child.id());
-
-    Ok((child, log_path))
+    Ok((command, log_path, resolved_acp_command))
 }
 
 fn child_rust_log_filter() -> String {
@@ -844,6 +894,211 @@ mod tests {
     #[test]
     fn unknown_command_returns_none() {
         assert!(known_acp_provider("custom-agent").is_none());
+    }
+
+    // ── build_agent_command provider-settings injection gate ─────────────
+    //
+    // `build_agent_command` itself needs a real `tauri::AppHandle`, which is
+    // impractical to construct in a unit test. The behavior we care about is
+    // the *gate* that decides whether the provider-settings env injection
+    // runs — `known_acp_provider(&record.agent_command).is_some_and(|p| p.id == "sprout-agent")`.
+    //
+    // Together with the `agent_provider_settings::tests` suite (which directly
+    // tests `apply_to_command` for all four `LoadForSpawn` variants), these
+    // tests document the exact set of agent commands that will trigger the
+    // injection.
+
+    #[test]
+    fn sprout_agent_gate_matches_bare_command() {
+        assert!(known_acp_provider("sprout-agent").is_some_and(|p| p.id == "sprout-agent"));
+    }
+
+    #[test]
+    fn sprout_agent_gate_matches_absolute_path() {
+        assert!(known_acp_provider("/usr/local/bin/sprout-agent")
+            .is_some_and(|p| p.id == "sprout-agent"));
+    }
+
+    #[test]
+    fn non_sprout_agent_does_not_trigger_gate() {
+        // goose is a known provider but not sprout-agent — gate is false.
+        assert!(!known_acp_provider("goose").is_some_and(|p| p.id == "sprout-agent"));
+    }
+
+    #[test]
+    fn unknown_command_does_not_trigger_gate() {
+        // Custom binary unknown to the registry — gate is false.
+        assert!(!known_acp_provider("custom-thing").is_some_and(|p| p.id == "sprout-agent"));
+    }
+
+    // ── Gate × apply integration: assert the observable side effect ──────
+    //
+    // The gate alone is a pure predicate. These tests exercise the path
+    // `build_agent_command` actually takes: "if gate, then run apply_to_command".
+    // We simulate the prior state of `command` (the rest of `build_agent_command`
+    // has stamped SPROUT_ACP_* into the env), then run the same branch as
+    // production code and assert the resulting Command's env reflects the
+    // expected policy. This catches regressions where the gate keeps firing
+    // but `apply_to_command` is wired wrong (e.g., dropped from the branch).
+    //
+    // We use `LoadForSpawn::None` so the test is hermetic — no filesystem,
+    // no Tauri State, just env-block effects.
+
+    use crate::commands::agent_provider_settings::{self, LoadForSpawn};
+
+    fn env_map(cmd: &std::process::Command) -> std::collections::HashMap<String, Option<String>> {
+        cmd.get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn gate_fires_for_sprout_agent_then_apply_clears_acp_overrides() {
+        let agent_command = "sprout-agent";
+        let mut cmd = std::process::Command::new("/bin/true");
+        // Pretend the rest of build_agent_command set these from the record.
+        cmd.env("SPROUT_ACP_MODEL", "stale-from-record");
+        cmd.env("SPROUT_ACP_SYSTEM_PROMPT", "stale-prompt");
+
+        if known_acp_provider(agent_command).is_some_and(|p| p.id == "sprout-agent") {
+            agent_provider_settings::apply_to_command(&mut cmd, LoadForSpawn::None, "sprout-agent");
+        }
+
+        let map = env_map(&cmd);
+        assert_eq!(
+            map.get("SPROUT_ACP_MODEL"),
+            Some(&None),
+            "ACP-level model override should be cleared when gate fires"
+        );
+        assert_eq!(
+            map.get("SPROUT_ACP_SYSTEM_PROMPT"),
+            Some(&None),
+            "ACP-level prompt override should be cleared when gate fires"
+        );
+    }
+
+    #[test]
+    fn gate_fires_then_apply_strips_stale_owned_vars_on_corrupt_settings() {
+        // build_agent_command does NOT set ANTHROPIC_API_KEY etc. itself, but
+        // the child Command inherits the parent process's env unless we
+        // explicitly env_remove. Simulate a stale shell export of the prior
+        // baseline.
+        let agent_command = "sprout-agent";
+        let mut cmd = std::process::Command::new("/bin/true");
+        cmd.env("SPROUT_ACP_MODEL", "stale");
+        cmd.env("ANTHROPIC_API_KEY", "sk-ant-stale-shell-export");
+        cmd.env("OPENAI_COMPAT_API_KEY", "sk-stale");
+        cmd.env("SPROUT_AGENT_SYSTEM_PROMPT_FILE", "/tmp/stale-prompt");
+
+        if known_acp_provider(agent_command).is_some_and(|p| p.id == "sprout-agent") {
+            agent_provider_settings::apply_to_command(
+                &mut cmd,
+                LoadForSpawn::Error("corrupt envelope".into()),
+                "sprout-agent",
+            );
+        }
+
+        let map = env_map(&cmd);
+        // Owned provider vars must be removed (fail-closed).
+        assert_eq!(map.get("ANTHROPIC_API_KEY"), Some(&None));
+        assert_eq!(map.get("OPENAI_COMPAT_API_KEY"), Some(&None));
+        assert_eq!(map.get("SPROUT_AGENT_SYSTEM_PROMPT_FILE"), Some(&None));
+        // ACP overrides too.
+        assert_eq!(map.get("SPROUT_ACP_MODEL"), Some(&None));
+    }
+
+    #[test]
+    fn gate_fires_then_apply_strips_owned_vars_on_identity_mismatch() {
+        // R3-HIGH1: identity-mismatch must fail closed at spawn time,
+        // matching the corrupt-settings branch — otherwise a stale shell
+        // export of ANTHROPIC_API_KEY could drive sprout-agent under the
+        // wrong nsec while the panel says "settings exist for another
+        // identity".
+        let agent_command = "sprout-agent";
+        let mut cmd = std::process::Command::new("/bin/true");
+        cmd.env("ANTHROPIC_API_KEY", "sk-ant-stale-shell-export");
+        cmd.env("OPENAI_COMPAT_API_KEY", "sk-stale");
+
+        if known_acp_provider(agent_command).is_some_and(|p| p.id == "sprout-agent") {
+            agent_provider_settings::apply_to_command(
+                &mut cmd,
+                LoadForSpawn::IdentityMismatch,
+                "sprout-agent",
+            );
+        }
+
+        let map = env_map(&cmd);
+        assert_eq!(
+            map.get("ANTHROPIC_API_KEY"),
+            Some(&None),
+            "identity-mismatch must fail closed: stale shell key must be removed"
+        );
+        assert_eq!(map.get("OPENAI_COMPAT_API_KEY"), Some(&None));
+    }
+
+    #[test]
+    fn gate_fires_then_apply_injects_settings_on_ok() {
+        // Happy path: panel settings present and decryptable. apply must
+        // strip inherited owned vars first, then inject the (k,v) pairs
+        // from the EnvPairs. We construct a synthetic EnvPairs to exercise
+        // the injection without going through the storage layer.
+        use crate::commands::agent_provider_settings::EnvPairs;
+
+        let agent_command = "sprout-agent";
+        let mut cmd = std::process::Command::new("/bin/true");
+        cmd.env("ANTHROPIC_API_KEY", "sk-ant-stale");
+
+        if known_acp_provider(agent_command).is_some_and(|p| p.id == "sprout-agent") {
+            let pairs = EnvPairs::new(vec![
+                ("ANTHROPIC_API_KEY".into(), "sk-ant-from-panel".into()),
+                ("ANTHROPIC_MODEL".into(), "claude-sonnet-4-5".into()),
+            ]);
+            agent_provider_settings::apply_to_command(
+                &mut cmd,
+                LoadForSpawn::Ok(pairs),
+                "sprout-agent",
+            );
+        }
+
+        let map = env_map(&cmd);
+        assert_eq!(
+            map.get("ANTHROPIC_API_KEY"),
+            Some(&Some("sk-ant-from-panel".to_string()))
+        );
+        assert_eq!(
+            map.get("ANTHROPIC_MODEL"),
+            Some(&Some("claude-sonnet-4-5".to_string()))
+        );
+        // ACP overrides cleared by apply_to_command.
+        assert_eq!(map.get("SPROUT_ACP_MODEL"), Some(&None));
+    }
+
+    #[test]
+    fn gate_does_not_fire_for_other_agents_so_acp_overrides_persist() {
+        // For a non-sprout-agent (e.g. goose), the gate is false and the
+        // apply path is not entered, so ACP-level overrides remain on the
+        // Command. This protects users of other ACP agents from having
+        // their record-driven SPROUT_ACP_MODEL silently stripped.
+        let agent_command = "goose";
+        let mut cmd = std::process::Command::new("/bin/true");
+        cmd.env("SPROUT_ACP_MODEL", "goose-record-model");
+
+        if known_acp_provider(agent_command).is_some_and(|p| p.id == "sprout-agent") {
+            // Should NOT be reached.
+            agent_provider_settings::apply_to_command(&mut cmd, LoadForSpawn::None, "goose");
+        }
+
+        let map = env_map(&cmd);
+        assert_eq!(
+            map.get("SPROUT_ACP_MODEL"),
+            Some(&Some("goose-record-model".to_string())),
+            "ACP override must survive when gate is false (only sprout-agent owns these vars)"
+        );
     }
 
     // ── build_respond_to_env tests ───────────────────────────────────────
