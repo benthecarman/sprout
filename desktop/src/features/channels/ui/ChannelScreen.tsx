@@ -202,17 +202,17 @@ export function ChannelScreen({
     const pLookup = new Map<string, string>();
     const rLookup = new Map<string, RespondToMode>();
 
-    // Populate from profile data (works for all bots, including other users' bots).
+    const botPubkeys = new Set(
+      (channelMembers ?? [])
+        .filter((m) => m.role === "bot")
+        .map((m) => m.pubkey.toLowerCase()),
+    );
     const profiles = messageProfilesQuery.data?.profiles;
     if (profiles) {
       for (const [pubkey, profile] of Object.entries(profiles)) {
-        if (
-          profile.respondTo === "anyone" ||
-          profile.respondTo === "allowlist" ||
-          profile.respondTo === "owner-only"
-        ) {
-          rLookup.set(pubkey.toLowerCase(), profile.respondTo);
-        }
+        const key = pubkey.toLowerCase();
+        const rt = profile.respondTo as RespondToMode | null;
+        if (botPubkeys.has(key) && rt) rLookup.set(key, rt);
       }
     }
 
@@ -225,6 +225,7 @@ export function ChannelScreen({
     }
     return { personaLookup: pLookup, respondToLookup: rLookup };
   }, [
+    channelMembers,
     managedAgentsQuery.data,
     messageProfilesQuery.data?.profiles,
     personasQuery.data,

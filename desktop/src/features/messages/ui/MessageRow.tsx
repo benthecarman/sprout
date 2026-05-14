@@ -391,6 +391,7 @@ export const MessageRow = React.memo(
     prev.message.tags === next.message.tags &&
     prev.message.role === next.message.role &&
     prev.message.personaDisplayName === next.message.personaDisplayName &&
+    prev.message.respondTo === next.message.respondTo &&
     prev.highlighted === next.highlighted &&
     prev.activeReplyTargetId === next.activeReplyTargetId &&
     prev.layoutVariant === next.layoutVariant &&
