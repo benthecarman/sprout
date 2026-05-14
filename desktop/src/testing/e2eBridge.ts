@@ -419,9 +419,14 @@ type MockManagedAgent = RawManagedAgent & {
 type WsHandler = (message: unknown) => void;
 const GLOBAL_MOCK_SUBSCRIPTION = "*";
 
+type MockSubscription = {
+  channelId: string;
+  kinds: number[] | null;
+};
+
 type MockSocket = {
   handler: WsHandler;
-  subscriptions: Map<string, string>;
+  subscriptions: Map<string, MockSubscription>;
 };
 
 function createMockRelayMembershipEvent(): RelayEvent {
@@ -480,12 +485,14 @@ declare global {
     __SPROUT_E2E_WEBVIEW_ZOOM__?: number;
     __SPROUT_E2E_HAS_MOCK_LIVE_SUBSCRIPTION__?: (input: {
       channelName: string;
+      kind?: number;
     }) => boolean;
     __SPROUT_E2E_EMIT_MOCK_MESSAGE__?: (input: {
       channelName: string;
       content: string;
       parentEventId?: string | null;
       pubkey?: string;
+      kind?: number;
     }) => RelayEvent;
     __SPROUT_E2E_EMIT_MOCK_TYPING__?: (input: {
       channelName: string;
@@ -1742,10 +1749,11 @@ function emitMockHistory(socket: MockSocket, subId: string, channelId: string) {
 
 function emitMockLiveEvent(channelId: string, event: RelayEvent) {
   for (const socket of mockSockets.values()) {
-    for (const [subId, subscribedChannelId] of socket.subscriptions) {
+    for (const [subId, subscription] of socket.subscriptions) {
       if (
-        subscribedChannelId === channelId ||
-        subscribedChannelId === GLOBAL_MOCK_SUBSCRIPTION
+        (subscription.channelId === channelId ||
+          subscription.channelId === GLOBAL_MOCK_SUBSCRIPTION) &&
+        (!subscription.kinds || subscription.kinds.includes(event.kind))
       ) {
         sendWsText(socket.handler, ["EVENT", subId, event]);
       }
@@ -1753,12 +1761,15 @@ function emitMockLiveEvent(channelId: string, event: RelayEvent) {
   }
 }
 
-function hasMockLiveSubscription(channelId: string) {
+function hasMockLiveSubscription(channelId: string, kind?: number) {
   for (const socket of mockSockets.values()) {
-    for (const subscribedChannelId of socket.subscriptions.values()) {
+    for (const subscription of socket.subscriptions.values()) {
       if (
-        subscribedChannelId === channelId ||
-        subscribedChannelId === GLOBAL_MOCK_SUBSCRIPTION
+        (subscription.channelId === channelId ||
+          subscription.channelId === GLOBAL_MOCK_SUBSCRIPTION) &&
+        (kind === undefined ||
+          !subscription.kinds ||
+          subscription.kinds.includes(kind))
       ) {
         return true;
       }
@@ -1786,9 +1797,16 @@ function emitMockChannelMessage(
   content: string,
   parentEventId?: string | null,
   pubkey?: string,
+  kind?: number,
 ) {
+  const eventKind = kind ?? 9;
   if (!parentEventId) {
-    const event = createMockEvent(9, content, [["h", channelId]], pubkey);
+    const event = createMockEvent(
+      eventKind,
+      content,
+      [["h", channelId]],
+      pubkey,
+    );
     recordMockMessage(channelId, event);
     emitMockLiveEvent(channelId, event);
     return event;
@@ -1806,7 +1824,7 @@ function emitMockChannelMessage(
   const rootEventId = parentThread.rootEventId ?? parentEventId;
   const authorPubkey = pubkey ?? DEFAULT_MOCK_IDENTITY.pubkey;
   const event = createMockEvent(
-    9,
+    eventKind,
     content,
     buildReplyMessageTags(
       channelId,
@@ -4469,19 +4487,23 @@ function sendToMockSocket(args: {
     if (subId.startsWith("live-")) {
       // Collect channel IDs from all filters in the REQ
       const channelIds = new Set<string>();
+      const kinds = new Set<number>();
       for (let i = 1; i < rest.length; i++) {
-        const f = rest[i] as { "#h"?: string[] };
+        const f = rest[i] as { "#h"?: string[]; kinds?: number[] };
         const cid = f["#h"]?.[0];
         if (cid) channelIds.add(cid);
+        for (const kind of f.kinds ?? []) {
+          kinds.add(kind);
+        }
       }
       const onlyChannelId =
         channelIds.size === 1
           ? (channelIds.values().next().value as string)
           : undefined;
-      socket.subscriptions.set(
-        subId,
-        onlyChannelId ?? GLOBAL_MOCK_SUBSCRIPTION,
-      );
+      socket.subscriptions.set(subId, {
+        channelId: onlyChannelId ?? GLOBAL_MOCK_SUBSCRIPTION,
+        kinds: kinds.size > 0 ? [...kinds] : null,
+      });
       sendWsText(socket.handler, ["EOSE", subId]);
       return;
     }
@@ -4578,6 +4600,7 @@ export function maybeInstallE2eTauriMocks() {
     content,
     parentEventId,
     pubkey,
+    kind,
   }) => {
     const channel = mockChannels.find(
       (candidate) => candidate.name === channelName,
@@ -4586,7 +4609,13 @@ export function maybeInstallE2eTauriMocks() {
       throw new Error(`Mock channel ${channelName} not found.`);
     }
 
-    return emitMockChannelMessage(channel.id, content, parentEventId, pubkey);
+    return emitMockChannelMessage(
+      channel.id,
+      content,
+      parentEventId,
+      pubkey,
+      kind,
+    );
   };
   window.__SPROUT_E2E_EMIT_MOCK_TYPING__ = ({ channelName, pubkey }) => {
     const channel = mockChannels.find(
@@ -4598,7 +4627,10 @@ export function maybeInstallE2eTauriMocks() {
 
     return emitMockTypingIndicator(channel.id, pubkey ?? CHARLIE_PUBKEY);
   };
-  window.__SPROUT_E2E_HAS_MOCK_LIVE_SUBSCRIPTION__ = ({ channelName }) => {
+  window.__SPROUT_E2E_HAS_MOCK_LIVE_SUBSCRIPTION__ = ({
+    channelName,
+    kind,
+  }) => {
     const channel = mockChannels.find(
       (candidate) => candidate.name === channelName,
     );
@@ -4606,7 +4638,7 @@ export function maybeInstallE2eTauriMocks() {
       throw new Error(`Mock channel ${channelName} not found.`);
     }
 
-    return hasMockLiveSubscription(channel.id);
+    return hasMockLiveSubscription(channel.id, kind);
   };
   window.__SPROUT_E2E_PUSH_MOCK_FEED_ITEM__ = (item) => {
     const category = item.category === "mention" ? "mentions" : item.category;
