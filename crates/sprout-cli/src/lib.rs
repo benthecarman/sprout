@@ -178,6 +178,9 @@ enum Cmd {
     /// Publish notes and manage the social graph (NIP-01/02)
     #[command(subcommand)]
     Social(SocialCmd),
+    /// Manage NIP-51 follow sets — named, reusable rosters of pubkeys
+    #[command(subcommand)]
+    FollowSets(FollowSetsCmd),
     /// Announce and discover git repositories (NIP-34)
     #[command(subcommand)]
     Repos(ReposCmd),
@@ -440,28 +443,58 @@ pub enum ChannelsCmd {
         #[arg(long)]
         channel: String,
     },
-    /// Add a member to a channel
-    #[command(name = "add-member")]
+    /// Add a member (or every member of a follow set) to a channel
+    #[command(
+        name = "add-member",
+        after_help = "Examples:\n  sprout channels add-member --channel <UUID> --pubkey <HEX>\n  sprout channels add-member --channel <UUID> --follow-set backend-team --role bot"
+    )]
     AddMember {
         /// Channel UUID
         #[arg(long)]
         channel: String,
-        /// Member pubkey (64-char hex)
-        #[arg(long)]
-        pubkey: String,
-        /// Member role (owner, admin, member, guest, bot)
+        /// Member pubkey (64-char hex). Mutually exclusive with --follow-set.
+        #[arg(
+            long,
+            conflicts_with = "follow_set",
+            required_unless_present = "follow_set"
+        )]
+        pubkey: Option<String>,
+        /// Follow set `d` identifier — fans out one add-member event per
+        /// pubkey in the set. Mutually exclusive with --pubkey.
+        #[arg(long = "follow-set")]
+        follow_set: Option<String>,
+        /// Follow set author (64-char hex). Defaults to the CLI's own pubkey.
+        /// Only meaningful with --follow-set.
+        #[arg(long, requires = "follow_set")]
+        author: Option<String>,
+        /// Member role applied to every pubkey added (owner, admin, member, guest, bot).
         #[arg(long)]
         role: Option<String>,
     },
-    /// Remove a member from a channel
-    #[command(name = "remove-member")]
+    /// Remove a member (or every member of a follow set) from a channel
+    #[command(
+        name = "remove-member",
+        after_help = "Examples:\n  sprout channels remove-member --channel <UUID> --pubkey <HEX>\n  sprout channels remove-member --channel <UUID> --follow-set backend-team"
+    )]
     RemoveMember {
         /// Channel UUID
         #[arg(long)]
         channel: String,
-        /// Member pubkey (64-char hex)
-        #[arg(long)]
-        pubkey: String,
+        /// Member pubkey (64-char hex). Mutually exclusive with --follow-set.
+        #[arg(
+            long,
+            conflicts_with = "follow_set",
+            required_unless_present = "follow_set"
+        )]
+        pubkey: Option<String>,
+        /// Follow set `d` identifier — fans out one remove-member event per
+        /// pubkey in the set. Mutually exclusive with --pubkey.
+        #[arg(long = "follow-set")]
+        follow_set: Option<String>,
+        /// Follow set author (64-char hex). Defaults to the CLI's own pubkey.
+        /// Only meaningful with --follow-set.
+        #[arg(long, requires = "follow_set")]
+        author: Option<String>,
     },
 }
 
@@ -746,6 +779,54 @@ pub enum SocialCmd {
 }
 
 // ---------------------------------------------------------------------------
+// Follow Sets subcommands (NIP-51, kind:30000)
+// ---------------------------------------------------------------------------
+
+/// Subcommands for `sprout follow-sets`.
+#[derive(Subcommand)]
+pub enum FollowSetsCmd {
+    /// List your own follow sets (newest first by `created_at`).
+    #[command(after_help = "Example:\n  sprout follow-sets list")]
+    List,
+    /// Fetch a single follow set by `d` identifier.
+    #[command(
+        after_help = "Examples:\n  sprout follow-sets get --d backend-team\n  sprout follow-sets get --d backend-team --author <HEX>"
+    )]
+    Get {
+        /// Set `d` identifier.
+        #[arg(long = "d")]
+        d: String,
+        /// Set author (64-char hex). Defaults to the CLI's own pubkey.
+        #[arg(long)]
+        author: Option<String>,
+    },
+    /// Create or replace (NIP-33 full-replace) a follow set.
+    #[command(
+        after_help = "Examples:\n  sprout follow-sets put --d backend-team --title \"Backend Team\" --member <HEX> --member <HEX>"
+    )]
+    Put {
+        /// Set `d` identifier (stable, ≤ 256 bytes; reserved values rejected).
+        #[arg(long = "d")]
+        d: String,
+        /// Human-readable title (≤ 256 bytes).
+        #[arg(long)]
+        title: Option<String>,
+        /// Optional description (≤ 4096 bytes).
+        #[arg(long)]
+        description: Option<String>,
+        /// Member pubkey (64-char hex) — repeatable. Full replace.
+        #[arg(long = "member")]
+        members: Vec<String>,
+    },
+    /// Delete one of your follow sets (NIP-09 against the kind:30000 address).
+    Delete {
+        /// Set `d` identifier.
+        #[arg(long = "d")]
+        d: String,
+    },
+}
+
+// ---------------------------------------------------------------------------
 // Repos subcommands
 // ---------------------------------------------------------------------------
 
@@ -876,6 +957,7 @@ async fn run(cli: Cli) -> Result<(), CliError> {
         Cmd::Workflows(sub) => commands::workflows::dispatch(sub, &client).await,
         Cmd::Feed(sub) => commands::feed::dispatch(sub, &client).await,
         Cmd::Social(sub) => commands::social::dispatch(sub, &client).await,
+        Cmd::FollowSets(sub) => commands::follow_sets::dispatch(sub, &client).await,
         Cmd::Repos(sub) => commands::repos::dispatch(sub, &client).await,
         Cmd::Upload(sub) => commands::upload::dispatch(sub, &client).await,
         Cmd::Pack(_) => unreachable!("handled above"),
@@ -904,6 +986,7 @@ mod tests {
             "channels",
             "dms",
             "feed",
+            "follow-sets",
             "messages",
             "pack",
             "reactions",
@@ -1001,9 +1084,102 @@ mod tests {
             names(&cmd, "social"),
             vec!["contacts", "event", "notes", "publish", "set-contacts"]
         );
+        assert_eq!(
+            names(&cmd, "follow-sets"),
+            vec!["delete", "get", "list", "put"]
+        );
         assert_eq!(names(&cmd, "repos"), vec!["create", "get", "list"]);
         assert_eq!(names(&cmd, "upload"), vec!["file"]);
         assert_eq!(names(&cmd, "pack"), vec!["inspect", "validate"]);
+    }
+
+    #[test]
+    fn follow_sets_cli_parses_canonical_invocations() {
+        let cmd = Cli::command();
+        // happy paths
+        cmd.clone()
+            .try_get_matches_from(["sprout", "follow-sets", "list"])
+            .expect("`follow-sets list` should parse");
+        cmd.clone()
+            .try_get_matches_from(["sprout", "follow-sets", "get", "--d", "team"])
+            .expect("`follow-sets get --d team` should parse");
+        cmd.clone()
+            .try_get_matches_from([
+                "sprout",
+                "follow-sets",
+                "put",
+                "--d",
+                "team",
+                "--title",
+                "Team",
+                "--member",
+                "aa".repeat(32).as_str(),
+                "--member",
+                "bb".repeat(32).as_str(),
+            ])
+            .expect("`follow-sets put` with repeated --member should parse");
+        cmd.clone()
+            .try_get_matches_from(["sprout", "follow-sets", "delete", "--d", "team"])
+            .expect("`follow-sets delete --d team` should parse");
+    }
+
+    #[test]
+    fn add_member_requires_pubkey_or_follow_set() {
+        let cmd = Cli::command();
+        // Bare add-member with neither --pubkey nor --follow-set must fail.
+        let res = cmd.clone().try_get_matches_from([
+            "sprout",
+            "channels",
+            "add-member",
+            "--channel",
+            "abc",
+        ]);
+        assert!(
+            res.is_err(),
+            "add-member must require --pubkey or --follow-set"
+        );
+
+        // Both at once must conflict.
+        let pk = "aa".repeat(32);
+        let conflict = cmd.clone().try_get_matches_from([
+            "sprout",
+            "channels",
+            "add-member",
+            "--channel",
+            "abc",
+            "--pubkey",
+            pk.as_str(),
+            "--follow-set",
+            "team",
+        ]);
+        assert!(
+            conflict.is_err(),
+            "--pubkey and --follow-set must be mutually exclusive"
+        );
+
+        // Either one alone must parse.
+        cmd.clone()
+            .try_get_matches_from([
+                "sprout",
+                "channels",
+                "add-member",
+                "--channel",
+                "abc",
+                "--pubkey",
+                pk.as_str(),
+            ])
+            .expect("add-member with --pubkey alone should parse");
+        cmd.clone()
+            .try_get_matches_from([
+                "sprout",
+                "channels",
+                "add-member",
+                "--channel",
+                "abc",
+                "--follow-set",
+                "team",
+            ])
+            .expect("add-member with --follow-set alone should parse");
     }
 
     #[test]
@@ -1013,6 +1189,7 @@ mod tests {
             ("channels", 14),
             ("dms", 3),
             ("feed", 1),
+            ("follow-sets", 4),
             ("messages", 8),
             ("pack", 2),
             ("reactions", 3),

@@ -235,52 +235,210 @@ pub async fn cmd_delete_channel(client: &SproutClient, channel_id: &str) -> Resu
     Ok(())
 }
 
+fn parse_role(role: Option<&str>) -> Result<Option<sprout_sdk::MemberRole>, CliError> {
+    match role {
+        None => Ok(None),
+        Some("owner") => Ok(Some(sprout_sdk::MemberRole::Owner)),
+        Some("admin") => Ok(Some(sprout_sdk::MemberRole::Admin)),
+        Some("member") => Ok(Some(sprout_sdk::MemberRole::Member)),
+        Some("guest") => Ok(Some(sprout_sdk::MemberRole::Guest)),
+        Some("bot") => Ok(Some(sprout_sdk::MemberRole::Bot)),
+        Some(other) => Err(CliError::Usage(format!(
+            "--role must be owner/admin/member/guest/bot (got: {other})"
+        ))),
+    }
+}
+
 pub async fn cmd_add_channel_member(
     client: &SproutClient,
     channel_id: &str,
-    pubkey: &str,
+    pubkey: Option<&str>,
+    follow_set: Option<&str>,
+    follow_set_author: Option<&str>,
     role: Option<&str>,
 ) -> Result<(), CliError> {
-    validate_hex64(pubkey)?;
     let channel_uuid = parse_uuid(channel_id)?;
+    let typed_role = parse_role(role)?;
 
-    let typed_role = match role {
-        None => None,
-        Some("owner") => Some(sprout_sdk::MemberRole::Owner),
-        Some("admin") => Some(sprout_sdk::MemberRole::Admin),
-        Some("member") => Some(sprout_sdk::MemberRole::Member),
-        Some("guest") => Some(sprout_sdk::MemberRole::Guest),
-        Some("bot") => Some(sprout_sdk::MemberRole::Bot),
-        Some(other) => {
-            return Err(CliError::Usage(format!(
-                "--role must be owner/admin/member/guest/bot (got: {other})"
-            )))
+    match (pubkey, follow_set) {
+        (Some(pk), None) => {
+            validate_hex64(pk)?;
+            let builder = sprout_sdk::build_add_member(channel_uuid, pk, typed_role)
+                .map_err(|e| CliError::Other(format!("build_add_member failed: {e}")))?;
+            let event = client.sign_event(builder)?;
+            let resp = client.submit_event(event).await?;
+            println!("{resp}");
+            Ok(())
         }
-    };
-    let builder = sprout_sdk::build_add_member(channel_uuid, pubkey, typed_role)
-        .map_err(|e| CliError::Other(format!("build_add_member failed: {e}")))?;
-
-    let event = client.sign_event(builder)?;
-    let resp = client.submit_event(event).await?;
-    println!("{resp}");
-    Ok(())
+        (None, Some(d)) => {
+            let author = match follow_set_author {
+                Some(a) => {
+                    validate_hex64(a)?;
+                    a.to_ascii_lowercase()
+                }
+                None => client.keys().public_key().to_hex(),
+            };
+            let set = super::follow_sets::fetch_follow_set(client, d, &author)
+                .await?
+                .ok_or_else(|| {
+                    CliError::Usage(format!("no follow set found for d=`{d}` author=`{author}`"))
+                })?;
+            if set.members.is_empty() {
+                return Err(CliError::Usage(format!(
+                    "follow set `{}` has zero members; nothing to add",
+                    set.title.unwrap_or_else(|| d.to_string())
+                )));
+            }
+            fan_out_membership(
+                client,
+                channel_uuid,
+                &set.members,
+                |ch, pk| -> Result<nostr::EventBuilder, sprout_sdk::SdkError> {
+                    sprout_sdk::build_add_member(ch, pk, typed_role)
+                },
+                "add",
+            )
+            .await
+        }
+        // clap's `required_unless_present` guarantees we don't see (None, None).
+        _ => Err(CliError::Usage(
+            "--pubkey and --follow-set are mutually exclusive".into(),
+        )),
+    }
 }
 
 pub async fn cmd_remove_channel_member(
     client: &SproutClient,
     channel_id: &str,
-    pubkey: &str,
+    pubkey: Option<&str>,
+    follow_set: Option<&str>,
+    follow_set_author: Option<&str>,
 ) -> Result<(), CliError> {
-    validate_hex64(pubkey)?;
     let channel_uuid = parse_uuid(channel_id)?;
 
-    let builder = sprout_sdk::build_remove_member(channel_uuid, pubkey)
-        .map_err(|e| CliError::Other(format!("build_remove_member failed: {e}")))?;
+    match (pubkey, follow_set) {
+        (Some(pk), None) => {
+            validate_hex64(pk)?;
+            let builder = sprout_sdk::build_remove_member(channel_uuid, pk)
+                .map_err(|e| CliError::Other(format!("build_remove_member failed: {e}")))?;
+            let event = client.sign_event(builder)?;
+            let resp = client.submit_event(event).await?;
+            println!("{resp}");
+            Ok(())
+        }
+        (None, Some(d)) => {
+            let author = match follow_set_author {
+                Some(a) => {
+                    validate_hex64(a)?;
+                    a.to_ascii_lowercase()
+                }
+                None => client.keys().public_key().to_hex(),
+            };
+            let set = super::follow_sets::fetch_follow_set(client, d, &author)
+                .await?
+                .ok_or_else(|| {
+                    CliError::Usage(format!("no follow set found for d=`{d}` author=`{author}`"))
+                })?;
+            if set.members.is_empty() {
+                return Err(CliError::Usage(format!(
+                    "follow set `{}` has zero members; nothing to remove",
+                    set.title.unwrap_or_else(|| d.to_string())
+                )));
+            }
+            fan_out_membership(
+                client,
+                channel_uuid,
+                &set.members,
+                |ch, pk| -> Result<nostr::EventBuilder, sprout_sdk::SdkError> {
+                    sprout_sdk::build_remove_member(ch, pk)
+                },
+                "remove",
+            )
+            .await
+        }
+        _ => Err(CliError::Usage(
+            "--pubkey and --follow-set are mutually exclusive".into(),
+        )),
+    }
+}
 
-    let event = client.sign_event(builder)?;
-    let resp = client.submit_event(event).await?;
-    println!("{resp}");
-    Ok(())
+/// Iterate `members`, sign + submit one event per pubkey, and print a JSON
+/// summary `{ok, failed, results}`. Failures don't abort the loop — every
+/// member gets a result row, so a partial outage is visible.
+async fn fan_out_membership<F>(
+    client: &SproutClient,
+    channel_uuid: uuid::Uuid,
+    members: &[String],
+    builder_fn: F,
+    verb: &str,
+) -> Result<(), CliError>
+where
+    F: Fn(uuid::Uuid, &str) -> Result<nostr::EventBuilder, sprout_sdk::SdkError>,
+{
+    let mut results = Vec::with_capacity(members.len());
+    let mut ok_count = 0usize;
+    let mut failed_count = 0usize;
+    for pk in members {
+        let builder = match builder_fn(channel_uuid, pk) {
+            Ok(b) => b,
+            Err(e) => {
+                failed_count += 1;
+                results.push(serde_json::json!({
+                    "pubkey": pk,
+                    "ok": false,
+                    "error": format!("build error: {e}"),
+                }));
+                continue;
+            }
+        };
+        let event = match client.sign_event(builder) {
+            Ok(ev) => ev,
+            Err(e) => {
+                failed_count += 1;
+                results.push(serde_json::json!({
+                    "pubkey": pk,
+                    "ok": false,
+                    "error": format!("sign error: {e}"),
+                }));
+                continue;
+            }
+        };
+        match client.submit_event(event).await {
+            Ok(resp) => {
+                ok_count += 1;
+                results.push(serde_json::json!({
+                    "pubkey": pk,
+                    "ok": true,
+                    "response": serde_json::from_str::<serde_json::Value>(&resp)
+                        .unwrap_or(serde_json::Value::String(resp)),
+                }));
+            }
+            Err(e) => {
+                failed_count += 1;
+                results.push(serde_json::json!({
+                    "pubkey": pk,
+                    "ok": false,
+                    "error": e.to_string(),
+                }));
+            }
+        }
+    }
+    let summary = serde_json::json!({
+        "verb": verb,
+        "channel": channel_uuid.to_string(),
+        "ok": ok_count,
+        "failed": failed_count,
+        "results": results,
+    });
+    println!("{}", serde_json::to_string_pretty(&summary).unwrap());
+    if failed_count > 0 {
+        Err(CliError::Other(format!(
+            "{failed_count} of {} {verb}-member operations failed",
+            members.len()
+        )))
+    } else {
+        Ok(())
+    }
 }
 
 pub async fn cmd_set_canvas(
@@ -347,10 +505,34 @@ pub async fn dispatch(cmd: crate::ChannelsCmd, client: &SproutClient) -> Result<
         ChannelsCmd::AddMember {
             channel,
             pubkey,
+            follow_set,
+            author,
             role,
-        } => cmd_add_channel_member(client, &channel, &pubkey, role.as_deref()).await,
-        ChannelsCmd::RemoveMember { channel, pubkey } => {
-            cmd_remove_channel_member(client, &channel, &pubkey).await
+        } => {
+            cmd_add_channel_member(
+                client,
+                &channel,
+                pubkey.as_deref(),
+                follow_set.as_deref(),
+                author.as_deref(),
+                role.as_deref(),
+            )
+            .await
+        }
+        ChannelsCmd::RemoveMember {
+            channel,
+            pubkey,
+            follow_set,
+            author,
+        } => {
+            cmd_remove_channel_member(
+                client,
+                &channel,
+                pubkey.as_deref(),
+                follow_set.as_deref(),
+                author.as_deref(),
+            )
+            .await
         }
     }
 }
