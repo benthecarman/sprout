@@ -1,4 +1,4 @@
-//! Typed event builder functions (38 builders).
+//! Typed event builder functions (40 builders).
 //!
 //! All functions return `Result<nostr::EventBuilder, SdkError>`.
 //! The caller signs: `builder.sign_with_keys(&keys)?`.
@@ -7,8 +7,8 @@ use nostr::{EventBuilder, Kind, Tag};
 use sprout_core::{
     kind::{
         KIND_AGENT_OBSERVER_FRAME, KIND_APPROVAL_DENY, KIND_APPROVAL_GRANT, KIND_DELETION,
-        KIND_DM_ADD_MEMBER, KIND_DM_OPEN, KIND_GIT_REPO_ANNOUNCEMENT, KIND_PRESENCE_UPDATE,
-        KIND_WORKFLOW_DEF, KIND_WORKFLOW_TRIGGER,
+        KIND_DM_ADD_MEMBER, KIND_DM_OPEN, KIND_FOLLOW_SET, KIND_GIT_REPO_ANNOUNCEMENT,
+        KIND_PRESENCE_UPDATE, KIND_WORKFLOW_DEF, KIND_WORKFLOW_TRIGGER,
     },
     observer::{
         content_looks_like_nip44, OBSERVER_AGENT_TAG, OBSERVER_FRAME_CONTROL, OBSERVER_FRAME_TAG,
@@ -620,6 +620,162 @@ pub fn build_contact_list(
         ])?);
     }
     Ok(EventBuilder::new(Kind::Custom(3), "", tags))
+}
+
+// ── Builders 26 & 27: NIP-51 follow sets ────────────────────────────────────
+
+/// Maximum number of `p` members allowed in a single follow set event.
+const MAX_FOLLOW_SET_MEMBERS: usize = 10_000;
+
+/// Maximum byte length of the `d` tag value.
+const MAX_D_TAG_BYTES: usize = 256;
+
+/// Maximum byte length of optional `title` / `description` tag values.
+const MAX_TITLE_BYTES: usize = 256;
+const MAX_DESCRIPTION_BYTES: usize = 4_096;
+
+/// Legacy d-tag values that upstream NIP-51 has migrated to kind:10000–10004.
+/// Creating one of these on kind:30000 would produce a confusing
+/// semi-interoperable event, so the SDK refuses.
+const RESERVED_FOLLOW_SET_D_TAGS: &[&str] = &["mute", "pin", "bookmark", "communities"];
+
+/// Build a NIP-51 follow set (kind:30000).
+///
+/// A follow set is a parameterized-replaceable event (NIP-33) addressed by
+/// `(pubkey, kind, d_tag)` whose body is a list of `p` tags naming pubkeys.
+/// `title` and `description` are optional metadata tags.
+///
+/// `d` is the set's stable identifier within the author's namespace and is
+/// what makes one set distinguishable from another for the same author.
+/// `members` are pubkeys (64-char hex, any case — normalized to lowercase).
+///
+/// # Validation
+///
+/// - `d` must be non-empty and ≤ 256 bytes.
+/// - `d` must not equal one of the reserved legacy NIP-51 values
+///   (`mute`, `pin`, `bookmark`, `communities`) which have moved to
+///   kind:10000–10004 upstream — using them at kind:30000 would create
+///   semi-interoperable events.
+/// - Each member must be exactly 64 hex chars. Duplicates are silently
+///   deduplicated (first occurrence wins) so callers can pass roster
+///   spans without worrying about overlap.
+/// - `title` ≤ 256 bytes, `description` ≤ 4096 bytes when provided.
+/// - At most [`MAX_FOLLOW_SET_MEMBERS`] members.
+///
+/// Publishing a kind:30000 with the same `d` replaces any prior version
+/// from the same author per NIP-33 — this is a full replace, not a delta.
+pub fn build_follow_set(
+    d: &str,
+    members: &[&str],
+    title: Option<&str>,
+    description: Option<&str>,
+) -> Result<EventBuilder, SdkError> {
+    if d.is_empty() {
+        return Err(SdkError::InvalidInput(
+            "follow set `d` tag must not be empty".into(),
+        ));
+    }
+    if d.len() > MAX_D_TAG_BYTES {
+        return Err(SdkError::InvalidInput(format!(
+            "follow set `d` tag exceeds {MAX_D_TAG_BYTES} bytes (got {})",
+            d.len()
+        )));
+    }
+    if RESERVED_FOLLOW_SET_D_TAGS.contains(&d) {
+        return Err(SdkError::InvalidInput(format!(
+            "d=`{d}` is a legacy NIP-51 d-tag that has migrated to kind:10000–10004; \
+             do not create it on kind:30000"
+        )));
+    }
+    if members.len() > MAX_FOLLOW_SET_MEMBERS {
+        return Err(SdkError::InvalidInput(format!(
+            "follow set exceeds maximum of {MAX_FOLLOW_SET_MEMBERS} members (got {})",
+            members.len()
+        )));
+    }
+    if let Some(t) = title {
+        if t.len() > MAX_TITLE_BYTES {
+            return Err(SdkError::InvalidInput(format!(
+                "title exceeds {MAX_TITLE_BYTES} bytes (got {})",
+                t.len()
+            )));
+        }
+    }
+    if let Some(desc) = description {
+        if desc.len() > MAX_DESCRIPTION_BYTES {
+            return Err(SdkError::InvalidInput(format!(
+                "description exceeds {MAX_DESCRIPTION_BYTES} bytes (got {})",
+                desc.len()
+            )));
+        }
+    }
+
+    let mut tags = Vec::with_capacity(members.len() + 3);
+    tags.push(tag(&["d", d])?);
+    if let Some(t) = title {
+        tags.push(tag(&["title", t])?);
+    }
+    if let Some(desc) = description {
+        tags.push(tag(&["description", desc])?);
+    }
+
+    let mut seen = std::collections::HashSet::with_capacity(members.len());
+    for pk in members {
+        if pk.len() != 64 || !pk.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            return Err(SdkError::InvalidInput(format!(
+                "follow set member pubkey must be exactly 64 hex chars, got len={}",
+                pk.len()
+            )));
+        }
+        let lower = pk.to_ascii_lowercase();
+        if !seen.insert(lower.clone()) {
+            continue;
+        }
+        tags.push(tag(&["p", &lower])?);
+    }
+
+    Ok(EventBuilder::new(
+        Kind::Custom(KIND_FOLLOW_SET as u16),
+        "",
+        tags,
+    ))
+}
+
+/// Build a NIP-09 deletion event for a follow set authored by `author_pubkey`
+/// at the `d` identifier.
+///
+/// Emits a `kind:5` event tagging both the parameterized-replaceable address
+/// (`["a", "30000:<author>:<d>"]`) and the kind (`["k", "30000"]`).
+///
+/// The caller must sign with `author_pubkey`'s keys — a deletion signed by a
+/// different author is meaningless. The CLI/UI layer is responsible for
+/// enforcing this; the SDK only constructs the event.
+pub fn build_delete_follow_set(d: &str, author_pubkey: &str) -> Result<EventBuilder, SdkError> {
+    if d.is_empty() {
+        return Err(SdkError::InvalidInput(
+            "follow set `d` tag must not be empty".into(),
+        ));
+    }
+    if d.len() > MAX_D_TAG_BYTES {
+        return Err(SdkError::InvalidInput(format!(
+            "follow set `d` tag exceeds {MAX_D_TAG_BYTES} bytes (got {})",
+            d.len()
+        )));
+    }
+    if author_pubkey.len() != 64 || !author_pubkey.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err(SdkError::InvalidInput(format!(
+            "author pubkey must be exactly 64 hex chars, got len={}",
+            author_pubkey.len()
+        )));
+    }
+    let author_lower = author_pubkey.to_ascii_lowercase();
+    let address = format!("{KIND_FOLLOW_SET}:{author_lower}:{d}");
+    let tags = vec![tag(&["a", &address])?, tag(&["k", "30000"])?];
+    Ok(EventBuilder::new(
+        Kind::Custom(KIND_DELETION as u16),
+        "",
+        tags,
+    ))
 }
 
 // ── Huddle shared helper ──────────────────────────────────────────────────────
@@ -1925,6 +2081,138 @@ mod tests {
         let entry = (pubkey.as_str(), None, None);
         let contacts = vec![entry; MAX_CONTACTS + 1];
         let err = build_contact_list(&contacts).unwrap_err();
+        assert!(matches!(err, SdkError::InvalidInput(_)));
+    }
+
+    // ── Builders 26 & 27: build_follow_set / build_delete_follow_set ─────────
+
+    fn hex_pk(byte: u8) -> String {
+        // 64-char hex pubkey deterministically derived from a byte.
+        format!("{:02x}{}", byte, "00".repeat(31))
+    }
+
+    #[test]
+    fn follow_set_happy_path() {
+        let m1 = hex_pk(0x11);
+        let m2 = hex_pk(0x22);
+        let members = [m1.as_str(), m2.as_str()];
+        let ev = sign(
+            build_follow_set(
+                "backend-team",
+                &members,
+                Some("Backend Team"),
+                Some("On-call backend engineers."),
+            )
+            .unwrap(),
+        );
+        assert_eq!(ev.kind, Kind::Custom(30000));
+        let tag_names: Vec<String> = ev.tags.iter().map(|t| t.kind().to_string()).collect();
+        // Order: d, title, description, then p-tags
+        assert_eq!(tag_names[0], "d");
+        assert_eq!(tag_names[1], "title");
+        assert_eq!(tag_names[2], "description");
+        let p_count = ev
+            .tags
+            .iter()
+            .filter(|t| t.kind().to_string() == "p")
+            .count();
+        assert_eq!(p_count, 2, "both members emitted as p-tags");
+    }
+
+    #[test]
+    fn follow_set_empty_d_tag_rejected() {
+        let err = build_follow_set("", &[], None, None).unwrap_err();
+        assert!(matches!(err, SdkError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn follow_set_reserved_d_tag_rejected() {
+        for reserved in ["mute", "pin", "bookmark", "communities"] {
+            let err = build_follow_set(reserved, &[], None, None).unwrap_err();
+            assert!(
+                matches!(err, SdkError::InvalidInput(ref msg) if msg.contains(reserved)),
+                "reserved d-tag `{reserved}` should be rejected with a clear message"
+            );
+        }
+    }
+
+    #[test]
+    fn follow_set_invalid_pubkey_rejected() {
+        let bad = "not-a-pubkey";
+        let err = build_follow_set("team", &[bad], None, None).unwrap_err();
+        assert!(matches!(err, SdkError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn follow_set_pubkeys_lowercased() {
+        let upper = format!("AA{}", "00".repeat(31));
+        let ev = sign(build_follow_set("team", &[upper.as_str()], None, None).unwrap());
+        let p = ev
+            .tags
+            .iter()
+            .find(|t| t.kind().to_string() == "p")
+            .unwrap();
+        assert_eq!(p.content().unwrap(), upper.to_ascii_lowercase());
+    }
+
+    #[test]
+    fn follow_set_duplicate_pubkeys_deduplicated() {
+        let pk = hex_pk(0x33);
+        let dup = [pk.as_str(), pk.as_str(), pk.as_str()];
+        let ev = sign(build_follow_set("team", &dup, None, None).unwrap());
+        let p_count = ev
+            .tags
+            .iter()
+            .filter(|t| t.kind().to_string() == "p")
+            .count();
+        assert_eq!(p_count, 1, "duplicates should be dropped silently");
+    }
+
+    #[test]
+    fn follow_set_d_tag_byte_limit_enforced() {
+        let oversized = "a".repeat(257);
+        let err = build_follow_set(&oversized, &[], None, None).unwrap_err();
+        assert!(matches!(err, SdkError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn follow_set_member_count_cap_enforced() {
+        let pk = hex_pk(0x44);
+        let members: Vec<&str> =
+            std::iter::repeat_n(pk.as_str(), MAX_FOLLOW_SET_MEMBERS + 1).collect();
+        let err = build_follow_set("team", &members, None, None).unwrap_err();
+        assert!(matches!(err, SdkError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn delete_follow_set_emits_a_and_k_tags() {
+        let author = hex_pk(0x55);
+        let ev = sign(build_delete_follow_set("team", &author).unwrap());
+        assert_eq!(ev.kind, Kind::Custom(5));
+        let a = ev
+            .tags
+            .iter()
+            .find(|t| t.kind().to_string() == "a")
+            .expect("deletion must carry an `a` tag");
+        assert_eq!(a.content().unwrap(), format!("30000:{author}:team"));
+        let k = ev
+            .tags
+            .iter()
+            .find(|t| t.kind().to_string() == "k")
+            .expect("deletion must carry a `k` tag");
+        assert_eq!(k.content().unwrap(), "30000");
+    }
+
+    #[test]
+    fn delete_follow_set_invalid_author_rejected() {
+        let err = build_delete_follow_set("team", "nope").unwrap_err();
+        assert!(matches!(err, SdkError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn delete_follow_set_empty_d_rejected() {
+        let author = hex_pk(0x66);
+        let err = build_delete_follow_set("", &author).unwrap_err();
         assert!(matches!(err, SdkError::InvalidInput(_)));
     }
 
