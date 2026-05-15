@@ -1380,6 +1380,59 @@ async fn handle_a_tag_deletion(event: &Event, state: &Arc<AppState>) -> anyhow::
                 }
             }
         }
+        // Generic NIP-09 a-tag deletion for any kind in the parameterized-
+        // replaceable range (NIP-33). Looks up the latest event keyed by
+        // (pubkey, kind, d_tag) and soft-deletes it. Author authority is
+        // already enforced upstream by `validate_standard_deletion_event`,
+        // which rejects deletions whose `a` tag pubkey ≠ the deletion's
+        // author.
+        k if sprout_core::kind::is_parameterized_replaceable(k) => {
+            let pubkey_bytes = match hex::decode(pubkey_hex) {
+                Ok(b) if b.len() == 32 => b,
+                _ => {
+                    tracing::warn!("NIP-09 a-tag deletion: invalid pubkey in a-tag: {pubkey_hex}");
+                    return Ok(());
+                }
+            };
+            let query = sprout_db::event::EventQuery {
+                kinds: Some(vec![k as i32]),
+                authors: Some(vec![pubkey_bytes]),
+                d_tag: Some(d_tag.to_string()),
+                limit: Some(1),
+                ..Default::default()
+            };
+            match state.db.query_events(&query).await {
+                Ok(rows) => {
+                    if let Some(row) = rows.first() {
+                        let id_bytes = row.event.id.as_bytes().to_vec();
+                        match state.db.soft_delete_event(&id_bytes).await {
+                            Ok(true) => tracing::info!(
+                                kind = k,
+                                d_tag = d_tag,
+                                "NIP-09 a-tag deletion: parameterized-replaceable event soft-deleted"
+                            ),
+                            Ok(false) => tracing::debug!(
+                                kind = k,
+                                d_tag = d_tag,
+                                "NIP-09 a-tag deletion: target was already deleted"
+                            ),
+                            Err(e) => tracing::warn!(
+                                "NIP-09 a-tag deletion: soft-delete failed: {e}"
+                            ),
+                        }
+                    } else {
+                        tracing::debug!(
+                            kind = k,
+                            d_tag = d_tag,
+                            "NIP-09 a-tag deletion: no matching event for (kind, author, d)"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("NIP-09 a-tag deletion: query failed: {e}");
+                }
+            }
+        }
         _ => {
             tracing::debug!(
                 kind = kind_num,
