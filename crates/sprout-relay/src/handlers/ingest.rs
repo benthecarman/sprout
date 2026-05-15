@@ -14,21 +14,21 @@ use sprout_auth::Scope;
 use sprout_core::kind::{
     event_kind_u32, is_parameterized_replaceable, is_relay_admin_kind, KIND_APPROVAL_DENY,
     KIND_APPROVAL_GRANT, KIND_AUTH, KIND_CANVAS, KIND_CONTACT_LIST, KIND_DELETION,
-    KIND_DM_ADD_MEMBER, KIND_DM_HIDE, KIND_DM_OPEN, KIND_FORUM_COMMENT, KIND_FORUM_POST,
-    KIND_FORUM_VOTE, KIND_GIFT_WRAP, KIND_GIT_ISSUE, KIND_GIT_PATCH, KIND_GIT_PR_UPDATE,
-    KIND_GIT_PULL_REQUEST, KIND_GIT_REPO_ANNOUNCEMENT, KIND_GIT_REPO_STATE, KIND_GIT_STATUS_CLOSED,
-    KIND_GIT_STATUS_DRAFT, KIND_GIT_STATUS_MERGED, KIND_GIT_STATUS_OPEN, KIND_HUDDLE_ENDED,
-    KIND_HUDDLE_GUIDELINES, KIND_HUDDLE_PARTICIPANT_JOINED, KIND_HUDDLE_PARTICIPANT_LEFT,
-    KIND_HUDDLE_RECORDING_AVAILABLE, KIND_HUDDLE_STARTED, KIND_HUDDLE_TRACK_PUBLISHED,
-    KIND_LONG_FORM, KIND_MEMBER_ADDED_NOTIFICATION, KIND_MEMBER_REMOVED_NOTIFICATION,
-    KIND_NIP29_CREATE_GROUP, KIND_NIP29_DELETE_EVENT, KIND_NIP29_DELETE_GROUP,
-    KIND_NIP29_EDIT_METADATA, KIND_NIP29_JOIN_REQUEST, KIND_NIP29_LEAVE_REQUEST,
-    KIND_NIP29_PUT_USER, KIND_NIP29_REMOVE_USER, KIND_NIP43_LEAVE_REQUEST, KIND_PRESENCE_UPDATE,
-    KIND_PROFILE, KIND_REACTION, KIND_READ_STATE, KIND_STREAM_MESSAGE,
-    KIND_STREAM_MESSAGE_BOOKMARKED, KIND_STREAM_MESSAGE_DIFF, KIND_STREAM_MESSAGE_EDIT,
-    KIND_STREAM_MESSAGE_PINNED, KIND_STREAM_MESSAGE_SCHEDULED, KIND_STREAM_MESSAGE_V2,
-    KIND_STREAM_REMINDER, KIND_TEXT_NOTE, KIND_USER_STATUS, KIND_WORKFLOW_DEF,
-    KIND_WORKFLOW_TRIGGER, RELAY_ADMIN_ADD_MEMBER, RELAY_ADMIN_CHANGE_ROLE,
+    KIND_DM_ADD_MEMBER, KIND_DM_HIDE, KIND_DM_OPEN, KIND_FOLLOW_SET, KIND_FORUM_COMMENT,
+    KIND_FORUM_POST, KIND_FORUM_VOTE, KIND_GIFT_WRAP, KIND_GIT_ISSUE, KIND_GIT_PATCH,
+    KIND_GIT_PR_UPDATE, KIND_GIT_PULL_REQUEST, KIND_GIT_REPO_ANNOUNCEMENT, KIND_GIT_REPO_STATE,
+    KIND_GIT_STATUS_CLOSED, KIND_GIT_STATUS_DRAFT, KIND_GIT_STATUS_MERGED, KIND_GIT_STATUS_OPEN,
+    KIND_HUDDLE_ENDED, KIND_HUDDLE_GUIDELINES, KIND_HUDDLE_PARTICIPANT_JOINED,
+    KIND_HUDDLE_PARTICIPANT_LEFT, KIND_HUDDLE_RECORDING_AVAILABLE, KIND_HUDDLE_STARTED,
+    KIND_HUDDLE_TRACK_PUBLISHED, KIND_LONG_FORM, KIND_MEMBER_ADDED_NOTIFICATION,
+    KIND_MEMBER_REMOVED_NOTIFICATION, KIND_NIP29_CREATE_GROUP, KIND_NIP29_DELETE_EVENT,
+    KIND_NIP29_DELETE_GROUP, KIND_NIP29_EDIT_METADATA, KIND_NIP29_JOIN_REQUEST,
+    KIND_NIP29_LEAVE_REQUEST, KIND_NIP29_PUT_USER, KIND_NIP29_REMOVE_USER,
+    KIND_NIP43_LEAVE_REQUEST, KIND_PRESENCE_UPDATE, KIND_PROFILE, KIND_REACTION, KIND_READ_STATE,
+    KIND_STREAM_MESSAGE, KIND_STREAM_MESSAGE_BOOKMARKED, KIND_STREAM_MESSAGE_DIFF,
+    KIND_STREAM_MESSAGE_EDIT, KIND_STREAM_MESSAGE_PINNED, KIND_STREAM_MESSAGE_SCHEDULED,
+    KIND_STREAM_MESSAGE_V2, KIND_STREAM_REMINDER, KIND_TEXT_NOTE, KIND_USER_STATUS,
+    KIND_WORKFLOW_DEF, KIND_WORKFLOW_TRIGGER, RELAY_ADMIN_ADD_MEMBER, RELAY_ADMIN_CHANGE_ROLE,
     RELAY_ADMIN_REMOVE_MEMBER,
 };
 use sprout_core::verification::verify_event;
@@ -150,7 +150,9 @@ fn required_scope_for_kind(kind: u32, event: &Event) -> Result<Scope, &'static s
     match kind {
         KIND_PROFILE => Ok(Scope::UsersWrite),
         KIND_TEXT_NOTE | KIND_LONG_FORM => Ok(Scope::MessagesWrite),
-        KIND_CONTACT_LIST | KIND_READ_STATE | KIND_USER_STATUS => Ok(Scope::UsersWrite),
+        KIND_CONTACT_LIST | KIND_FOLLOW_SET | KIND_READ_STATE | KIND_USER_STATUS => {
+            Ok(Scope::UsersWrite)
+        }
         KIND_DELETION
         | KIND_REACTION
         | KIND_GIFT_WRAP
@@ -300,6 +302,8 @@ pub(crate) fn is_global_only_kind(kind: u32) -> bool {
             | KIND_LONG_FORM
             | KIND_USER_STATUS
             | KIND_READ_STATE
+            // NIP-51: follow sets are user-owned global rosters; an `h` tag, if present, is ignored.
+            | KIND_FOLLOW_SET
             // NIP-34: git events use `a` tags (repo reference), not `h` tags (channel scope).
             // Parameterized replaceable kinds are keyed by (pubkey, kind, d_tag).
             | KIND_GIT_REPO_ANNOUNCEMENT
@@ -1547,8 +1551,9 @@ pub async fn ingest_event(
 mod tests {
     use super::*;
     use sprout_core::kind::{
-        KIND_CANVAS, KIND_FORUM_COMMENT, KIND_FORUM_POST, KIND_FORUM_VOTE, KIND_LONG_FORM,
-        KIND_PRESENCE_UPDATE, KIND_STREAM_MESSAGE, KIND_STREAM_MESSAGE_DIFF, KIND_USER_STATUS,
+        KIND_CANVAS, KIND_FOLLOW_SET, KIND_FORUM_COMMENT, KIND_FORUM_POST, KIND_FORUM_VOTE,
+        KIND_LONG_FORM, KIND_PRESENCE_UPDATE, KIND_STREAM_MESSAGE, KIND_STREAM_MESSAGE_DIFF,
+        KIND_USER_STATUS,
     };
 
     #[test]
@@ -1653,6 +1658,40 @@ mod tests {
         assert!(!requires_h_channel_scope(KIND_USER_STATUS));
     }
 
+    // ── NIP-51 follow sets (kind:30000) ──────────────────────────────────────
+
+    #[test]
+    fn follow_set_is_in_scope_allowlist() {
+        let dummy = make_dummy_event();
+        assert!(
+            required_scope_for_kind(KIND_FOLLOW_SET, &dummy).is_ok(),
+            "KIND_FOLLOW_SET (30000) should be accepted"
+        );
+    }
+
+    #[test]
+    fn follow_set_requires_users_write_scope() {
+        // Authoring a follow set is user-owned data, like kind:3 / profile.
+        // Applying a set to a channel goes through kind:9000 add-member events,
+        // which require AdminChannels separately.
+        let dummy = make_dummy_event();
+        assert_eq!(
+            required_scope_for_kind(KIND_FOLLOW_SET, &dummy).unwrap(),
+            Scope::UsersWrite,
+        );
+    }
+
+    #[test]
+    fn follow_set_is_global_only() {
+        // kind:30000 is always global — a stray `h` tag must not channel-scope it.
+        assert!(is_global_only_kind(KIND_FOLLOW_SET));
+    }
+
+    #[test]
+    fn follow_set_does_not_require_h_tag() {
+        assert!(!requires_h_channel_scope(KIND_FOLLOW_SET));
+    }
+
     #[test]
     fn global_only_and_channel_scoped_are_disjoint() {
         // A kind cannot be both global-only and channel-scoped
@@ -1693,6 +1732,7 @@ mod tests {
             KIND_FORUM_COMMENT,
             KIND_LONG_FORM,
             KIND_USER_STATUS,
+            KIND_FOLLOW_SET,
         ];
         for kind in migrated {
             assert!(

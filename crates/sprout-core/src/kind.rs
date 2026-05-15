@@ -34,6 +34,13 @@ pub const KIND_USER_STATUS: u32 = 30315;
 /// Stored globally (channel_id = NULL); user-owned personal data, not channel-scoped.
 /// Content is NIP-44 encrypted to the user's own keypair.
 pub const KIND_READ_STATE: u32 = 30078;
+/// NIP-51: Follow set — a named, reusable roster of pubkeys (`p` tags).
+/// Parameterized replaceable (NIP-33, 30000–39999 range) — keyed by `(pubkey, kind, d_tag)`.
+/// Stored globally (channel_id = NULL); user-owned personal data, not channel-scoped.
+///
+/// Sprout accepts kind:30000 specifically; it does **not** accept the other
+/// NIP-51 list kinds (10000–10005, 30001–30005, 30015–30030, 39089, …) in v1.
+pub const KIND_FOLLOW_SET: u32 = 30000;
 /// NIP-42 auth event — never stored (carries bearer tokens).
 pub const KIND_AUTH: u32 = 22242;
 /// BUD-01: Blossom upload auth (used in upload.rs, not stored).
@@ -388,6 +395,7 @@ pub const ALL_KINDS: &[u32] = &[
     KIND_LONG_FORM,
     KIND_USER_STATUS,
     KIND_READ_STATE,
+    KIND_FOLLOW_SET,
     KIND_FORUM_POST,
     KIND_FORUM_VOTE,
     KIND_FORUM_COMMENT,
@@ -503,6 +511,7 @@ pub fn event_kind_i32(event: &nostr::Event) -> i32 {
 // Compile-time: new kinds are in the expected ranges.
 const _: () = assert!(is_replaceable(KIND_AGENT_PROFILE)); // 10100 ∈ 10000–19999
 const _: () = assert!(is_parameterized_replaceable(KIND_WORKFLOW_DEF)); // 30620 ∈ 30000–39999
+const _: () = assert!(is_parameterized_replaceable(KIND_FOLLOW_SET)); // 30000 ∈ 30000–39999
 
 // Compile-time: NIP-34 parameterized replaceable kinds are in the correct range.
 const _: () = assert!(
