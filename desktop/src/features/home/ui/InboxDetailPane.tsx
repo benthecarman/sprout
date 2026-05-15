@@ -1,4 +1,5 @@
 import {
+  ArrowUpRight,
   CheckCheck,
   Mail,
   MailOpen,
@@ -17,13 +18,13 @@ import { MessageActionBar } from "@/features/messages/ui/MessageActionBar";
 import { MessageComposer } from "@/features/messages/ui/MessageComposer";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
-import { Markdown } from "@/shared/ui/markdown";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/shared/ui/dropdown-menu";
+import { Markdown } from "@/shared/ui/markdown";
 import {
   Tooltip,
   TooltipContent,
@@ -53,12 +54,12 @@ type InboxDetailPaneProps = {
     mentionPubkeys: string[];
     parentEventId: string;
   }) => Promise<void>;
-  onToggleDone: () => void;
   onToggleReaction?: (
     message: TimelineMessage,
     emoji: string,
     remove: boolean,
   ) => Promise<void>;
+  onToggleDone: () => void;
 };
 
 type InboxDisplayMessage = InboxContextMessage & {
@@ -94,8 +95,8 @@ export function InboxDetailPane({
   onDelete,
   onOpenContext,
   onSendReply,
-  onToggleDone,
   onToggleReaction,
+  onToggleDone,
 }: InboxDetailPaneProps) {
   const detailPaneRef = React.useRef<HTMLElement | null>(null);
   const [replyTargetId, setReplyTargetId] = React.useState<string | null>(null);
@@ -202,60 +203,59 @@ export function InboxDetailPane({
       data-testid="home-inbox-detail"
       ref={detailPaneRef}
     >
-      <div className="px-6 pb-1 pt-14">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="min-w-0">
-            <div className="flex min-w-0 flex-wrap items-center gap-2">
-              {canOpenChannel && contextChannelId && onOpenContext ? (
-                <button
-                  className="truncate text-left text-sm font-semibold text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                  onClick={() => onOpenContext(contextChannelId, item.id)}
-                  type="button"
-                >
-                  {contextLabel}
-                </button>
-              ) : (
-                <p className="truncate text-sm font-semibold text-foreground">
-                  {contextLabel}
-                </p>
-              )}
-            </div>
-
-            <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
-              <span>{item.fullTimestampLabel}</span>
-            </div>
-          </div>
-
-          <div className="flex shrink-0 items-center gap-4">
-            <TooltipProvider delayDuration={200}>
-              <div className="flex items-center gap-4">
-                <div className="flex items-center gap-0.5">
-                  <HeaderIconAction
-                    label={isDone ? "Mark unread" : "Mark done"}
-                    onClick={onToggleDone}
-                    icon={
-                      isDone ? (
-                        <MailOpen className="h-4 w-4" />
-                      ) : (
-                        <CheckCheck className="h-4 w-4" />
-                      )
-                    }
-                  />
-                </div>
-                {canDelete ? (
-                  <HeaderMoreMenu
-                    isDeletingMessage={isDeletingMessage}
-                    onDelete={onDelete}
-                  />
-                ) : null}
-              </div>
-            </TooltipProvider>
-          </div>
-        </div>
-      </div>
-
       <div className="relative min-h-0 flex-1 overflow-hidden">
-        <div className="absolute inset-0 overflow-y-auto overscroll-contain pb-32 pt-1">
+        <div className="absolute inset-x-0 top-0 z-40 flex min-h-[44px] items-center justify-between gap-3 bg-background/70 px-6 py-[6px] backdrop-blur-xl supports-[backdrop-filter]:bg-background/55">
+          <div className="min-w-0">
+            {canOpenChannel && contextChannelId && onOpenContext ? (
+              <button
+                className="truncate text-left text-sm font-semibold leading-5 tracking-tight text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                onClick={() => onOpenContext(contextChannelId, item.id)}
+                title={item.fullTimestampLabel}
+                type="button"
+              >
+                {contextLabel}
+              </button>
+            ) : (
+              <h2
+                className="truncate text-sm font-semibold leading-5 tracking-tight text-foreground"
+                title={item.fullTimestampLabel}
+              >
+                {contextLabel}
+              </h2>
+            )}
+          </div>
+
+          <TooltipProvider delayDuration={200}>
+            <div className="flex shrink-0 items-center gap-1">
+              {canOpenChannel && contextChannelId && onOpenContext ? (
+                <HeaderIconAction
+                  label="Open context"
+                  onClick={() => onOpenContext(contextChannelId, item.id)}
+                  icon={<ArrowUpRight className="h-4 w-4" />}
+                />
+              ) : null}
+              <HeaderIconAction
+                label={isDone ? "Mark unread" : "Mark done"}
+                onClick={onToggleDone}
+                icon={
+                  isDone ? (
+                    <MailOpen className="h-4 w-4" />
+                  ) : (
+                    <CheckCheck className="h-4 w-4" />
+                  )
+                }
+              />
+              {canDelete ? (
+                <HeaderMoreMenu
+                  isDeletingMessage={isDeletingMessage}
+                  onDelete={onDelete}
+                />
+              ) : null}
+            </div>
+          </TooltipProvider>
+        </div>
+
+        <div className="absolute inset-0 overflow-y-auto overscroll-contain pb-32 pt-14">
           <div>
             {isThreadContextLoading ? (
               <div className="px-6 pb-3 text-[11px] text-muted-foreground">

@@ -325,9 +325,9 @@ export function HomeView({
       selectedItem.item.pubkey.trim().toLowerCase();
 
   return (
-    <div className="flex-1 overflow-hidden">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <div
-        className="grid h-full min-h-0 w-full lg:grid-cols-[320px_minmax(0,1fr)]"
+        className="grid min-h-0 flex-1 w-full lg:grid-cols-[320px_minmax(0,1fr)]"
         data-testid="home-inbox"
       >
         <InboxListPane
@@ -424,11 +424,6 @@ export function HomeView({
               setIsSendingReply(false);
             }
           }}
-          onToggleDone={() => {
-            if (selectedItem) {
-              handleToggleDone(selectedItem.id);
-            }
-          }}
           onToggleReaction={
             canReply
               ? async (message, emoji, remove) => {
@@ -442,6 +437,11 @@ export function HomeView({
                 }
               : undefined
           }
+          onToggleDone={() => {
+            if (selectedItem) {
+              handleToggleDone(selectedItem.id);
+            }
+          }}
         />
       </div>
     </div>
