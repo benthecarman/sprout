@@ -44,17 +44,21 @@ export function NoteCard({
   const avatarUrl = profile?.avatarUrl ?? null;
 
   return (
-    <article className="group flex gap-3 rounded-2xl px-1 py-4 transition-colors hover:bg-muted/20 sm:px-2">
-      <div className="relative shrink-0 pt-1">
-        <UserAvatar avatarUrl={avatarUrl} displayName={displayName} />
+    <article className="group flex items-start gap-2.5 rounded-2xl px-1 py-4 transition-colors hover:bg-muted/20 sm:px-2">
+      <div className="relative shrink-0">
+        <UserAvatar
+          avatarUrl={avatarUrl}
+          className="!h-9 !w-9 shrink-0"
+          displayName={displayName}
+        />
         {isAgent ? (
           <Bot className="absolute -bottom-0.5 -right-0.5 h-3.5 w-3.5 rounded-full bg-background p-0.5 text-muted-foreground" />
         ) : null}
       </div>
 
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="truncate text-sm font-semibold leading-none">
+      <div className="min-w-0 flex-1 space-y-0">
+        <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0">
+          <span className="truncate text-sm font-semibold leading-none tracking-tight">
             {displayName}
           </span>
           {isAgent ? (
@@ -67,7 +71,7 @@ export function NoteCard({
               {profile.nip05Handle}
             </span>
           ) : null}
-          <span className="shrink-0 text-[11px] text-muted-foreground">
+          <span className="shrink-0 text-xs text-muted-foreground/70">
             {formatRelativeTime(note.createdAt)}
           </span>
           {!isOwnNote ? (
@@ -97,8 +101,8 @@ export function NoteCard({
           ) : null}
         </div>
 
-        <div className="mt-1.5 text-sm leading-relaxed text-foreground">
-          <Markdown content={note.content} />
+        <div className="mt-0.5 text-sm text-foreground">
+          <Markdown content={note.content} tight />
         </div>
 
         {!isOwnNote ? (

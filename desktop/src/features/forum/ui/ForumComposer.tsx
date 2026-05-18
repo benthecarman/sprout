@@ -35,6 +35,7 @@ type ForumComposerProps = {
   className?: string;
   placeholder: string;
   disabled?: boolean;
+  header?: React.ReactNode;
   isSending?: boolean;
   onCancel?: () => void;
   onSubmit: (
@@ -53,6 +54,7 @@ export function ForumComposer({
   className,
   placeholder,
   disabled,
+  header,
   isSending,
   onCancel,
   onSubmit,
@@ -355,6 +357,7 @@ export function ForumComposer({
       onSubmit={handleSubmit}
     >
       {media.isDragOver && <DropZoneOverlay />}
+      {header ? <div className="mb-2">{header}</div> : null}
       <ChannelAutocomplete
         onSelect={applyChannelInsert}
         position={autocompletePosition}

@@ -1,4 +1,4 @@
-import { Check, Filter, RefreshCw } from "lucide-react";
+import { Check, Filter, Search } from "lucide-react";
 import * as React from "react";
 
 import { useRelayAgentsQuery } from "@/features/agents/hooks";
@@ -28,14 +28,15 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/shared/ui/dropdown-menu";
+import { Input } from "@/shared/ui/input";
 import { Skeleton } from "@/shared/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/shared/ui/tabs";
 import { UserAvatar } from "@/shared/ui/UserAvatar";
 
-type PulseTab = "foryou" | "people" | "agents" | "mine";
+type PulseTab = "search" | "foryou" | "people" | "agents" | "mine";
 
 const tabTriggerClassName =
-  "h-6 rounded-full px-3 py-0 text-[11px] font-semibold shadow-none transition-colors text-muted-foreground hover:text-foreground data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm";
+  "h-6 rounded-full px-3 py-0 text-[11px] font-semibold shadow-none transition-colors !text-muted-foreground hover:!text-foreground data-[state=active]:bg-background data-[state=active]:!text-foreground data-[state=active]:shadow-sm dark:!text-white/35 dark:hover:!text-white/70 dark:data-[state=active]:!text-white";
 
 type PulseViewProps = {
   currentPubkey?: string;
@@ -136,6 +137,7 @@ function AgentFilter({
 export function PulseView({ currentPubkey }: PulseViewProps) {
   const [activeTab, setActiveTab] = React.useState<PulseTab>("foryou");
   const [agentFilter, setAgentFilter] = React.useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = React.useState("");
 
   // ── Contact list & follow state ────────────────────────────────────────
   const contactListQuery = useContactListQuery(currentPubkey);
@@ -274,11 +276,6 @@ export function PulseView({ currentPubkey }: PulseViewProps) {
           ? agentTimelineQuery
           : myNotesQuery;
   const isLoading = activeQuery.isLoading;
-  const isRefetching = activeQuery.isRefetching;
-
-  function handleRefresh() {
-    void activeQuery.refetch();
-  }
 
   function handleFollow(pubkey: string) {
     followMutation.mutate(pubkey);
@@ -290,6 +287,7 @@ export function PulseView({ currentPubkey }: PulseViewProps) {
 
   // ── Render ─────────────────────────────────────────────────────────────
   const emptyMessages: Record<PulseTab, string> = {
+    search: "Search Pulse notes by author or text.",
     foryou:
       "No notes yet. Follow people and agents to build your personalized feed.",
     people: "No notes yet. Follow people to see their updates here.",
@@ -346,25 +344,34 @@ export function PulseView({ currentPubkey }: PulseViewProps) {
         {/* Tab bar */}
         <div className="shrink-0 px-4 pt-11 sm:px-6">
           <div className="relative mx-auto flex w-full max-w-2xl items-center justify-center">
-            <TabsList className="h-7 gap-0.5 rounded-full border border-border/50 bg-muted/40 p-0.5">
-              <TabsTrigger value="foryou" className={tabTriggerClassName}>
-                Everyone
-              </TabsTrigger>
-              <TabsTrigger value="people" className={tabTriggerClassName}>
-                Following
-              </TabsTrigger>
-              <TabsTrigger value="agents" className={tabTriggerClassName}>
-                Agents
-                {relayAgents.length > 0 ? (
-                  <span className="ml-1.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1 text-[10px] font-medium text-muted-foreground">
-                    {relayAgents.length}
-                  </span>
-                ) : null}
-              </TabsTrigger>
-              <TabsTrigger value="mine" className={tabTriggerClassName}>
-                Mine
-              </TabsTrigger>
-            </TabsList>
+            <div className="flex items-center">
+              <TabsList className="h-7 gap-0.5 rounded-full border border-border/50 bg-muted/40 p-0.5">
+                <TabsTrigger
+                  aria-label="Search Pulse"
+                  value="search"
+                  className="h-6 w-6 rounded-full p-0 !text-muted-foreground shadow-none transition-colors hover:!text-foreground data-[state=active]:bg-background data-[state=active]:!text-foreground data-[state=active]:shadow-sm dark:!text-white/35 dark:hover:!text-white/70 dark:data-[state=active]:!text-white"
+                >
+                  <Search className="h-3.5 w-3.5" />
+                </TabsTrigger>
+                <TabsTrigger value="foryou" className={tabTriggerClassName}>
+                  Everyone
+                </TabsTrigger>
+                <TabsTrigger value="people" className={tabTriggerClassName}>
+                  Following
+                </TabsTrigger>
+                <TabsTrigger value="agents" className={tabTriggerClassName}>
+                  Agents
+                  {relayAgents.length > 0 ? (
+                    <span className="ml-1.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1 text-[10px] font-medium text-muted-foreground dark:text-white/45">
+                      {relayAgents.length}
+                    </span>
+                  ) : null}
+                </TabsTrigger>
+                <TabsTrigger value="mine" className={tabTriggerClassName}>
+                  Mine
+                </TabsTrigger>
+              </TabsList>
+            </div>
 
             <div className="absolute right-0 flex items-center gap-1">
               {activeTab === "agents" && relayAgents.length > 1 ? (
@@ -375,17 +382,6 @@ export function PulseView({ currentPubkey }: PulseViewProps) {
                   selectedPubkey={agentFilter}
                 />
               ) : null}
-              <Button
-                className="h-7 w-7"
-                disabled={isRefetching}
-                onClick={handleRefresh}
-                size="icon"
-                variant="ghost"
-              >
-                <RefreshCw
-                  className={`h-3.5 w-3.5 ${isRefetching ? "animate-spin" : ""}`}
-                />
-              </Button>
             </div>
           </div>
         </div>
@@ -397,47 +393,77 @@ export function PulseView({ currentPubkey }: PulseViewProps) {
           className="mt-0 min-h-0 flex-1 overflow-y-auto"
         >
           <div className="mx-auto flex w-full max-w-2xl flex-col px-4 pb-10 pt-7 sm:px-6">
-            {activeTab !== "agents" ? (
-              <div className="mb-7 flex items-start gap-3">
-                <div className="shrink-0 pt-1">
-                  <UserAvatar
-                    avatarUrl={currentProfile?.avatarUrl ?? null}
-                    displayName={currentDisplayName}
+            {activeTab === "search" ? (
+              <div className="flex min-h-[56vh] items-center justify-center">
+                <div className="relative flex w-full max-w-xl flex-col items-center px-2">
+                  <div className="pointer-events-none absolute -inset-x-24 -inset-y-20 rounded-full bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.10),rgba(255,255,255,0)_56%)] opacity-80" />
+                  <img
+                    alt="Sprout"
+                    className="mb-7 h-16 w-16 object-contain opacity-95 dark:invert"
+                    src="/sprout.svg"
                   />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="mb-2 flex items-center gap-2">
-                    <span className="truncate text-sm font-semibold leading-none">
-                      {currentDisplayName}
-                    </span>
-                  </div>
-                  {publishMutation.isError && (
-                    <div className="mb-2 rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                      {publishMutation.error instanceof Error
-                        ? publishMutation.error.message
-                        : "Failed to publish note"}
+                  <div className="relative w-full max-w-lg">
+                    <div className="pointer-events-none absolute -inset-2 rounded-full bg-foreground/[0.03] blur-md dark:bg-white/[0.08]" />
+                    <div className="relative rounded-full border border-foreground/10 bg-background/80 p-1 shadow-[0_12px_48px_rgba(0,0,0,0.12)] backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.04] dark:shadow-[0_16px_70px_rgba(0,0,0,0.55)]">
+                      <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground dark:text-white/55" />
+                      <Input
+                        autoFocus
+                        className="h-9 rounded-full border-0 bg-transparent pl-10 pr-12 text-sm shadow-none placeholder:text-muted-foreground/80 focus-visible:ring-0 dark:text-white dark:placeholder:text-white/60"
+                        onChange={(event) => setSearchQuery(event.target.value)}
+                        placeholder="What would you like to know?"
+                        type="search"
+                        value={searchQuery}
+                      />
+                      <button
+                        aria-label="Search Pulse"
+                        className="absolute right-1.5 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full bg-foreground/10 text-foreground transition-colors hover:bg-foreground/15 dark:bg-white/85 dark:text-black dark:hover:bg-white"
+                        type="button"
+                      >
+                        <Search className="h-3.5 w-3.5" />
+                      </button>
                     </div>
-                  )}
-                  <ForumComposer
-                    autocompleteBelow
-                    className="rounded-xl border-border/60 bg-muted/30 px-3 py-2 shadow-none"
-                    members={pulseMentionMembers}
-                    placeholder="What's on your mind?"
-                    isSending={publishMutation.isPending}
-                    onSubmit={(content, mentionPubkeys, mediaTags) =>
-                      publishMutation.mutateAsync({
-                        content,
-                        mentionPubkeys,
-                        mediaTags,
-                      })
-                    }
-                    profiles={mentionProfiles}
-                  />
+                  </div>
                 </div>
+              </div>
+            ) : activeTab !== "agents" ? (
+              <div className="mb-7">
+                {publishMutation.isError && (
+                  <div className="mb-2 rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                    {publishMutation.error instanceof Error
+                      ? publishMutation.error.message
+                      : "Failed to publish note"}
+                  </div>
+                )}
+                <ForumComposer
+                  autocompleteBelow
+                  className="pulse-composer rounded-xl border-border/60 bg-muted/30 p-2 shadow-none"
+                  header={
+                    <div className="pt-1">
+                      <UserAvatar
+                        avatarUrl={currentProfile?.avatarUrl ?? null}
+                        className="!h-7 !w-7 shrink-0"
+                        displayName={currentDisplayName}
+                      />
+                    </div>
+                  }
+                  members={pulseMentionMembers}
+                  placeholder="What's on your mind?"
+                  isSending={publishMutation.isPending}
+                  onSubmit={(content, mentionPubkeys, mediaTags) =>
+                    publishMutation.mutateAsync({
+                      content,
+                      mentionPubkeys,
+                      mediaTags,
+                    })
+                  }
+                  profiles={mentionProfiles}
+                />
               </div>
             ) : null}
 
-            <div className="space-y-1">{renderTimeline()}</div>
+            {activeTab !== "search" ? (
+              <div className="space-y-1">{renderTimeline()}</div>
+            ) : null}
           </div>
         </TabsContent>
       </Tabs>
