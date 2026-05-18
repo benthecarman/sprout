@@ -107,6 +107,13 @@ _ensure-sidecar-stubs:
 desktop-tauri-check: _ensure-sidecar-stubs
     cargo check --manifest-path {{desktop_tauri_manifest}}
 
+# Drops sherpa-onnx, ort, opus, rodio, ndarray, rubato, earshot,
+# audioadapter-buffers, and tauri-plugin-global-shortcut from the dep graph.
+# Run on wimpy machines or in CI to keep the no-default-features path green.
+# Check the desktop Tauri Rust crate compiles WITHOUT the huddle feature
+desktop-light-check: _ensure-sidecar-stubs
+    cargo check --manifest-path {{desktop_tauri_manifest}} --no-default-features
+
 # Build the full desktop Tauri app locally (unsigned, for testing)
 desktop-release-build target="aarch64-apple-darwin":
     #!/usr/bin/env bash
@@ -121,8 +128,28 @@ desktop-release-build target="aarch64-apple-darwin":
     pnpm install
     cd {{desktop_dir}} && pnpm tauri build --target {{target}}
 
-# Run desktop checks suitable for CI / pre-push
-desktop-ci: desktop-check desktop-tauri-fmt-check desktop-build desktop-tauri-check
+# Pairs with VITE_SPROUT_HUDDLE=0 on the frontend to swap the huddle
+# module for a no-op shim. Drops sherpa-onnx, ort, opus, rodio, ndarray,
+# rubato, earshot, audioadapter-buffers, and tauri-plugin-global-shortcut.
+# Build the desktop Tauri app locally WITHOUT the huddle feature
+desktop-light-build target="aarch64-apple-darwin":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    TARGET={{target}}
+    mkdir -p desktop/src-tauri/binaries
+    touch "desktop/src-tauri/binaries/sprout-acp-$TARGET"
+    touch "desktop/src-tauri/binaries/sprout-mcp-server-$TARGET"
+    touch "desktop/src-tauri/binaries/sprout-agent-$TARGET"
+    touch "desktop/src-tauri/binaries/sprout-dev-mcp-$TARGET"
+    touch "desktop/src-tauri/binaries/git-credential-nostr-$TARGET"
+    pnpm install
+    cd {{desktop_dir}} && VITE_SPROUT_HUDDLE=0 pnpm tauri build \
+        --target {{target}} \
+        --no-default-features \
+        --config src-tauri/tauri.light.conf.json
+
+# Run desktop checks suitable for CI / pre-push (full + light)
+desktop-ci: desktop-check desktop-tauri-fmt-check desktop-build desktop-tauri-check desktop-light-check
 
 # Seed deterministic channel data for desktop Playwright tests
 desktop-e2e-seed:
@@ -188,6 +215,24 @@ dev *ARGS: _ensure-sidecar-stubs
     source ../scripts/instance-env.sh
     echo "Starting on Vite port ${SPROUT_VITE_PORT}, relay ${SPROUT_RELAY_URL}"
     pnpm exec tauri dev --config "$SPROUT_TAURI_CONFIG" {{ARGS}}
+
+# Fast iteration on machines that can't compile the native TTS/STT stack.
+# Drops the heavy deps via --no-default-features, swaps the frontend
+# huddle module for a no-op shim via VITE_SPROUT_HUDDLE=0, and layers
+# a Tauri config override so the global-shortcut ACL isn't required.
+# Run the desktop Tauri app in dev mode WITHOUT the huddle feature
+desktop-light *ARGS: _ensure-sidecar-stubs
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd {{desktop_dir}}
+    [[ -d node_modules ]] || pnpm install
+    source ../scripts/instance-env.sh
+    echo "Starting LIGHT (no huddle) on Vite port ${SPROUT_VITE_PORT}, relay ${SPROUT_RELAY_URL}"
+    VITE_SPROUT_HUDDLE=0 pnpm exec tauri dev \
+        --config "$SPROUT_TAURI_CONFIG" \
+        --config src-tauri/tauri.light.conf.json \
+        --no-default-features \
+        {{ARGS}}
 
 # Run the desktop app against the internal staging relay (installs deps + builds agent tools automatically)
 staging *ARGS: _ensure-sidecar-stubs
