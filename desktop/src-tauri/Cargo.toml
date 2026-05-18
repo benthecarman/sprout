@@ -41,7 +41,6 @@ tokio = { version = "1", features = ["fs", "sync", "rt", "macros", "time"] }
 tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 futures-util = "0.3"
-opus = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 nostr = { version = "0.37", features = ["nip44"] }
@@ -57,20 +56,41 @@ sha2 = "0.11"
 tar = "0.4"
 bzip2 = "0.5"
 chrono = { version = "0.4", features = ["serde"] }
-tauri-plugin-global-shortcut = "2"
 tauri-plugin-notification = "2.3.3"
 uuid = { version = "1", features = ["v4"] }
 png = "0.18"
 zip = "2"
-sherpa-onnx = "1.12"
-ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "tracing", "download-binaries", "tls-native", "copy-dylibs", "api-23", "coreml"] }
-ndarray = { version = "0.17", features = ["rayon"] }
 regex = "1"
 axum = "0.8"
-rodio = "0.22"
-earshot = "1.0"
-rubato = "2.0"
-audioadapter-buffers = "3.0"
 tempfile = "3"
+
+# Huddle-only dependencies. Pulled in only when the `huddle` feature is on.
+opus = { version = "0.3", optional = true }
+sherpa-onnx = { version = "1.12", optional = true }
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "tracing", "download-binaries", "tls-native", "copy-dylibs", "api-23", "coreml"], optional = true }
+ndarray = { version = "0.17", features = ["rayon"], optional = true }
+rodio = { version = "0.22", optional = true }
+earshot = { version = "1.0", optional = true }
+rubato = { version = "2.0", optional = true }
+audioadapter-buffers = { version = "3.0", optional = true }
+tauri-plugin-global-shortcut = { version = "2", optional = true }
+
+[features]
+default = ["huddle"]
+# Voice/huddle stack: TTS (Kokoro via ort/ONNX Runtime), STT (Parakeet via
+# sherpa-onnx), audio I/O (rodio/cpal), VAD (earshot), resampling (rubato),
+# Opus codec, and the global-shortcut plugin used for push-to-talk.
+# Disabling drops all native model deps from the build — see desktop-light.
+huddle = [
+    "dep:opus",
+    "dep:sherpa-onnx",
+    "dep:ort",
+    "dep:ndarray",
+    "dep:rodio",
+    "dep:earshot",
+    "dep:rubato",
+    "dep:audioadapter-buffers",
+    "dep:tauri-plugin-global-shortcut",
+]
 
 [dev-dependencies]

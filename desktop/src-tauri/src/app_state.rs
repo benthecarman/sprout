@@ -19,6 +19,7 @@ pub struct AppState {
     pub managed_agents_store_lock: Mutex<()>,
     pub channel_templates_store_lock: Mutex<()>,
     pub managed_agent_processes: Mutex<HashMap<String, ManagedAgentProcess>>,
+    #[cfg_attr(not(feature = "huddle"), allow(dead_code))]
     pub huddle_state: Mutex<HuddleState>,
     /// Tauri app handle — stored after setup so huddle commands can emit
     /// `huddle-state-changed` events without needing the handle threaded
@@ -28,6 +29,7 @@ pub struct AppState {
     pub app_handle: Mutex<Option<AppHandle>>,
     /// Selected audio output device name. `None` = system default.
     /// Used by `connect_audio_relay` and TTS pipeline when opening sinks.
+    #[cfg_attr(not(feature = "huddle"), allow(dead_code))]
     pub audio_output_device: Mutex<Option<String>>,
     /// Port of the localhost media streaming proxy (set during setup).
     pub media_proxy_port: AtomicU16,
@@ -87,6 +89,7 @@ impl AppState {
     /// Convenience wrapper — replaces 15+ instances of
     /// `state.huddle_state.lock().map_err(|e| e.to_string())?` throughout the
     /// huddle module.
+    #[cfg_attr(not(feature = "huddle"), allow(dead_code))]
     pub fn huddle(&self) -> Result<std::sync::MutexGuard<'_, crate::huddle::HuddleState>, String> {
         self.huddle_state.lock().map_err(|e| e.to_string())
     }
@@ -96,6 +99,7 @@ impl AppState {
     /// Acquires both locks (app_handle + huddle_state), clones a snapshot,
     /// releases both, then emits. Best-effort — no-op if either lock is
     /// poisoned or the app_handle hasn't been set yet.
+    #[cfg_attr(not(feature = "huddle"), allow(dead_code))]
     pub fn emit_huddle_state_changed(&self) {
         let app = match self.app_handle.lock() {
             Ok(guard) => guard.clone(),

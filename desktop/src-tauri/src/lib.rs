@@ -1,6 +1,10 @@
 mod app_state;
 mod commands;
 mod events;
+#[cfg(feature = "huddle")]
+mod huddle;
+#[cfg(not(feature = "huddle"))]
+#[path = "huddle_stub.rs"]
 mod huddle;
 mod managed_agents;
 mod media_proxy;
@@ -234,94 +238,97 @@ pub fn run() {
         )
         .plugin(tauri_plugin_websocket::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_process::init())
-        .plugin({
-            use tauri_plugin_global_shortcut::ShortcutState;
+        .plugin(tauri_plugin_process::init());
 
-            // Generation counter for the release delay task. Incremented on
-            // every press — a delayed release only fires if the generation
-            // hasn't changed (i.e. no new press happened during the delay).
-            // This prevents press→release→press within 200 ms from having
-            // the first release clobber the second press.
-            let ptt_press_gen = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    // Push-to-talk global shortcut handler — only relevant when huddle is
+    // compiled in. Wraps `tauri_plugin_global_shortcut` (an optional dep).
+    #[cfg(feature = "huddle")]
+    let builder = builder.plugin({
+        use tauri_plugin_global_shortcut::ShortcutState;
 
-            tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(move |app, _shortcut, event| {
-                    let state = match app.try_state::<AppState>() {
-                        Some(s) => s,
-                        None => return,
-                    };
+        // Generation counter for the release delay task. Incremented on
+        // every press — a delayed release only fires if the generation
+        // hasn't changed (i.e. no new press happened during the delay).
+        // This prevents press→release→press within 200 ms from having
+        // the first release clobber the second press.
+        let ptt_press_gen = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
-                    // Only act if a huddle is active and mode is PTT.
-                    let (is_ptt_mode, is_active) = match state.huddle_state.lock() {
-                        Ok(hs) => (
-                            hs.voice_input_mode == huddle::VoiceInputMode::PushToTalk,
-                            matches!(
-                                hs.phase,
-                                huddle::HuddlePhase::Connected | huddle::HuddlePhase::Active
-                            ),
+        tauri_plugin_global_shortcut::Builder::new()
+            .with_handler(move |app, _shortcut, event| {
+                let state = match app.try_state::<AppState>() {
+                    Some(s) => s,
+                    None => return,
+                };
+
+                // Only act if a huddle is active and mode is PTT.
+                let (is_ptt_mode, is_active) = match state.huddle_state.lock() {
+                    Ok(hs) => (
+                        hs.voice_input_mode == huddle::VoiceInputMode::PushToTalk,
+                        matches!(
+                            hs.phase,
+                            huddle::HuddlePhase::Connected | huddle::HuddlePhase::Active
                         ),
-                        Err(_) => return,
-                    };
+                    ),
+                    Err(_) => return,
+                };
 
-                    if !is_ptt_mode || !is_active {
-                        return;
-                    }
+                if !is_ptt_mode || !is_active {
+                    return;
+                }
 
-                    match event.state {
-                        ShortcutState::Pressed => {
-                            // Bump generation — invalidates any pending release delay.
-                            ptt_press_gen.fetch_add(1, std::sync::atomic::Ordering::Release);
+                match event.state {
+                    ShortcutState::Pressed => {
+                        // Bump generation — invalidates any pending release delay.
+                        ptt_press_gen.fetch_add(1, std::sync::atomic::Ordering::Release);
 
-                            if let Ok(hs) = state.huddle_state.lock() {
-                                hs.ptt_active
+                        if let Ok(hs) = state.huddle_state.lock() {
+                            hs.ptt_active
+                                .store(true, std::sync::atomic::Ordering::Release);
+                            // Only cancel TTS if it's actually playing — avoids
+                            // a stale cancel flag that drops the next queued message.
+                            if hs.tts_active.load(std::sync::atomic::Ordering::Acquire) {
+                                hs.tts_cancel
                                     .store(true, std::sync::atomic::Ordering::Release);
-                                // Only cancel TTS if it's actually playing — avoids
-                                // a stale cancel flag that drops the next queued message.
-                                if hs.tts_active.load(std::sync::atomic::Ordering::Acquire) {
-                                    hs.tts_cancel
-                                        .store(true, std::sync::atomic::Ordering::Release);
+                            }
+                        }
+                        // Emit ptt-state=true to the frontend.
+                        // The React side plays the press audio cue on this event
+                        // (Web Audio API via HuddleContext). Rust-side rodio audio
+                        // was considered but rejected: the rodio OutputStream must
+                        // outlive the handler and sharing it across the shortcut
+                        // closure adds lifecycle complexity for marginal gain.
+                        // The React implementation is sufficient and simpler.
+                        let _ = app.emit("ptt-state", true);
+                    }
+                    ShortcutState::Released => {
+                        // Capture generation at release time.
+                        let gen_at_release =
+                            ptt_press_gen.load(std::sync::atomic::Ordering::Acquire);
+                        let gen_arc = Arc::clone(&ptt_press_gen);
+                        let app_handle = app.clone();
+                        // 200 ms release delay — captures the tail of the utterance.
+                        // Only applies if no new press happened during the delay.
+                        tauri::async_runtime::spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                            // Check generation — if it changed, a new press arrived.
+                            if gen_arc.load(std::sync::atomic::Ordering::Acquire) != gen_at_release
+                            {
+                                return; // Superseded by a new press.
+                            }
+                            if let Some(state) = app_handle.try_state::<AppState>() {
+                                if let Ok(hs) = state.huddle_state.lock() {
+                                    hs.ptt_active
+                                        .store(false, std::sync::atomic::Ordering::Release);
                                 }
                             }
-                            // Emit ptt-state=true to the frontend.
-                            // The React side plays the press audio cue on this event
-                            // (Web Audio API via HuddleContext). Rust-side rodio audio
-                            // was considered but rejected: the rodio OutputStream must
-                            // outlive the handler and sharing it across the shortcut
-                            // closure adds lifecycle complexity for marginal gain.
-                            // The React implementation is sufficient and simpler.
-                            let _ = app.emit("ptt-state", true);
-                        }
-                        ShortcutState::Released => {
-                            // Capture generation at release time.
-                            let gen_at_release =
-                                ptt_press_gen.load(std::sync::atomic::Ordering::Acquire);
-                            let gen_arc = Arc::clone(&ptt_press_gen);
-                            let app_handle = app.clone();
-                            // 200 ms release delay — captures the tail of the utterance.
-                            // Only applies if no new press happened during the delay.
-                            tauri::async_runtime::spawn(async move {
-                                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                                // Check generation — if it changed, a new press arrived.
-                                if gen_arc.load(std::sync::atomic::Ordering::Acquire)
-                                    != gen_at_release
-                                {
-                                    return; // Superseded by a new press.
-                                }
-                                if let Some(state) = app_handle.try_state::<AppState>() {
-                                    if let Ok(hs) = state.huddle_state.lock() {
-                                        hs.ptt_active
-                                            .store(false, std::sync::atomic::Ordering::Release);
-                                    }
-                                }
-                                // Emit ptt-state=false — React plays the release audio cue.
-                                let _ = app_handle.emit("ptt-state", false);
-                            });
-                        }
+                            // Emit ptt-state=false — React plays the release audio cue.
+                            let _ = app_handle.emit("ptt-state", false);
+                        });
                     }
-                })
-                .build()
-        });
+                }
+            })
+            .build()
+    });
 
     // Only register the updater in release builds that were compiled with a
     // real updater configuration. Local unsigned builds omit that config and
@@ -396,6 +403,7 @@ pub fn run() {
             // Pre-download voice models in the background so they're ready
             // when the user starts their first huddle. Idempotent — no-op if
             // already downloaded. ~187 MB total (~100 MB Parakeet STT + ~87 MB Kokoro).
+            #[cfg(feature = "huddle")]
             if let Some(mgr) = huddle::models::global_model_manager() {
                 mgr.start_stt_download(state.http_client.clone());
                 mgr.start_kokoro_download(state.http_client.clone());
@@ -403,7 +411,7 @@ pub fn run() {
 
             // Register PTT global shortcut (Ctrl+Space).
             // Non-fatal: huddle works without the shortcut (user can switch to VAD mode).
-            #[cfg(desktop)]
+            #[cfg(all(desktop, feature = "huddle"))]
             {
                 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
                 let shortcut = Shortcut::new(Some(Modifiers::CONTROL), Code::Space);
