@@ -86,34 +86,42 @@ const SYNTH_NUM_STEPS: i32 = 1;
 /// helping of leading silence on every utterance.
 const SYNTH_SILENCE_SCALE: f32 = 0.0;
 
-/// Mimi codec frame rate — the LM samples one latent per 80 ms. Used to convert
-/// a token-count estimate into a `max_frames` cap, mirroring upstream
-/// `pocket_tts.models.tts_model._estimate_max_gen_len`.
-const MIMI_FRAME_RATE: f32 = 12.5;
+/// sherpa-onnx upstream default for `max_frames` (LM steps), in
+/// `offline-tts-pocket-impl.h:Generate`. 500 steps ≈ 40 s of audio at the
+/// Mimi 12.5 Hz frame rate. Referenced only by the regression test below;
+/// production code path never raises (or even reads) this value — we just
+/// leave sherpa-onnx's own default in place by not setting the override.
+#[cfg(test)]
+const SHERPA_ONNX_MAX_FRAMES_DEFAULT: i32 = 500;
 
-/// Upstream-derived "expected tokens per second of speech" for short inputs.
-/// Used by [`estimate_max_frames`] together with `GEN_SECONDS_PADDING` to cap
-/// runaway generation when the EOS logit fails to fire. Source:
-/// `pocket_tts.models.tts_model.TTSModel._TOKENS_PER_SECOND_ESTIMATE`.
-const TOKENS_PER_SECOND_ESTIMATE: f32 = 3.0;
+/// Tight `max_frames` we ask for on short, padded prompts to bound the
+/// original "monster breathing" runaway. 100 LM steps ≈ 8 s of audio —
+/// roomy for any one-to-four-word utterance the user is likely to elicit
+/// while still well short of the 40 s upstream default. Chosen with slack so
+/// we never *truncate* a legitimate short reply.
+const SHORT_PROMPT_MAX_FRAMES: i32 = 100;
 
-/// Slack added to the token-derived gen-length estimate, in seconds. Source:
-/// `pocket_tts.models.tts_model.TTSModel._GEN_SECONDS_PADDING`.
-const GEN_SECONDS_PADDING: f32 = 2.0;
-
-/// Hard ceiling on per-chunk generation length, in Mimi frames. Matches the
-/// sherpa-onnx upstream default (`offline-tts-pocket-impl.h:max_frames`) and
-/// is the worst-case bound we'll ever ask for. 500 frames = 40 s of audio.
-const MAX_FRAMES_HARD_CEILING: i32 = 500;
-
-/// Word-count threshold (inclusive) below which we (a) pad the prompt with
-/// leading spaces and (b) ask for `frames_after_eos = 3` instead of 1.
-/// Matches upstream `pocket_tts.models.tts_model.prepare_text_prompt`.
+/// Word-count threshold (inclusive) below which we pad the prompt with
+/// leading spaces and cap `max_frames` tighter than the upstream default.
+/// Matches upstream `pocket_tts.models.tts_model.prepare_text_prompt`. Above
+/// this threshold we leave sherpa-onnx's own defaults in place — overriding
+/// them caused the "first 'yep' is just static" regression seen on
+/// 2026-05-18, where dropping `frames_after_eos` below the upstream default
+/// of 3 clipped the leading audio of multi-clause sentences.
 const SHORT_PROMPT_WORD_THRESHOLD: usize = 4;
 
 /// Number of leading spaces prepended to short prompts. The upstream Python
 /// uses exactly 8 — keep parity rather than tuning blindly.
 const SHORT_PROMPT_PAD_SPACES: usize = 8;
+
+/// sherpa-onnx's documented `frames_after_eos` default. We deliberately do
+/// *not* override this knob — the previous attempt to bump it for short
+/// inputs and lower it for long inputs lowered it below the upstream default
+/// of 3, which clipped the leading audio of multi-clause sentences (the
+/// "first 'yep' is static" regression). The constant exists only for the
+/// regression test below. Source: `offline-tts-pocket-impl.h:Generate`.
+#[cfg(test)]
+const SHERPA_ONNX_FRAMES_AFTER_EOS_DEFAULT: i32 = 3;
 
 // ── ONNX file names (five Pocket TTS sessions plus two JSON tables) ───────────
 
@@ -220,33 +228,43 @@ pub fn load_text_to_speech(model_dir: &str) -> Result<PocketTts, String> {
 // ── Prompt preparation ────────────────────────────────────────────────────────
 
 /// Result of [`prepare_pocket_prompt`]: a synthesizer-ready prompt plus the
-/// per-call generation hints derived from the original text.
+/// per-call generation overrides derived from the original text.
+///
+/// `None` for either override means "leave sherpa-onnx's documented default
+/// in place". The pipeline only sets `max_frames` (and only for short
+/// padded inputs) so it can bound the original "monster breathing" runaway
+/// without disturbing the rest of the LM sampling envelope.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PreparedPrompt {
     /// Text to hand to `OfflineTts::generate_with_config`. Capitalized,
     /// punctuation-terminated, and (for short inputs) left-padded with spaces.
     pub text: String,
-    /// Value to pass via `GenerationConfig.extra["frames_after_eos"]`.
-    pub frames_after_eos: i32,
-    /// Value to pass via `GenerationConfig.extra["max_frames"]`. Adaptive to
-    /// text length — short prompts get a much tighter cap to prevent runaway
-    /// "monster breathing" generation when the EOS logit fails to fire.
-    pub max_frames: i32,
+    /// Value to pass via `GenerationConfig.extra["max_frames"]`, or `None` to
+    /// keep the upstream default of 500 LM steps. We only override on short
+    /// padded prompts where we have a tight expectation on output length.
+    pub max_frames: Option<i32>,
 }
 
-/// Mirror of upstream `pocket_tts.models.tts_model.prepare_text_prompt` plus
-/// `_estimate_max_gen_len`. Sherpa-onnx's C++ Pocket TTS impl does not run
-/// these preparation steps, so short / unpunctuated / lowercase inputs can
-/// trigger up to 40 s of runaway generation when the EOS logit never crosses
-/// its threshold. We replicate the upstream Python recipe here:
+/// Mirror of the *text-preparation* half of upstream
+/// `pocket_tts.models.tts_model.prepare_text_prompt`. Sherpa-onnx's C++
+/// Pocket TTS impl does not run these preparation steps, so short /
+/// unpunctuated / lowercase inputs can trigger up to 40 s of runaway
+/// generation when the EOS logit never crosses its threshold. We replicate
+/// the upstream Python recipe here:
 ///
 /// 1. Collapse interior whitespace (already done by `preprocess_for_tts`, but
 ///    cheap to re-check after sentence splitting).
 /// 2. Capitalize the first letter.
 /// 3. Append `.` if the text doesn't end in punctuation.
 /// 4. If fewer than five words, prepend `SHORT_PROMPT_PAD_SPACES` spaces and
-///    bump `frames_after_eos` from 1 → 3.
-/// 5. Compute an adaptive `max_frames` from the (post-padding) word count.
+///    return a tight [`SHORT_PROMPT_MAX_FRAMES`] cap so the LM can't run
+///    away if EOS still doesn't fire.
+///
+/// We do **not** override `frames_after_eos` — sherpa-onnx's default of 3
+/// is what we want. An earlier version set it to 1 on long inputs, which
+/// clipped the leading audio of multi-clause sentences ("first 'yep' is
+/// just static" regression). Tests `prepare_prompt_never_lowers_frames_…`
+/// lock this in.
 ///
 /// Returns `None` only if the input is empty after trimming — caller should
 /// skip synthesis in that case.
@@ -298,39 +316,41 @@ pub(crate) fn prepare_pocket_prompt(input: &str) -> Option<PreparedPrompt> {
     let word_count = cleaned.split_whitespace().count();
     let is_short = word_count <= SHORT_PROMPT_WORD_THRESHOLD;
 
-    let final_text = if is_short {
+    let (final_text, max_frames) = if is_short {
         let mut padded = String::with_capacity(cleaned.len() + SHORT_PROMPT_PAD_SPACES);
         for _ in 0..SHORT_PROMPT_PAD_SPACES {
             padded.push(' ');
         }
         padded.push_str(&cleaned);
-        padded
+        (padded, Some(SHORT_PROMPT_MAX_FRAMES))
     } else {
-        cleaned
+        // For everything ≥5 words, fall back to upstream defaults. Overriding
+        // these is what caused the "first 'yep' is static" regression — the
+        // upstream LM has been tuned for `frames_after_eos = 3` and
+        // `max_frames = 500`, and there's no clear win in second-guessing.
+        (cleaned, None)
     };
-
-    let frames_after_eos = if is_short { 3 } else { 1 };
-    let max_frames = estimate_max_frames(word_count);
 
     Some(PreparedPrompt {
         text: final_text,
-        frames_after_eos,
         max_frames,
     })
 }
 
-/// Convert a word count into a Mimi-frame cap, matching upstream
-/// `_estimate_max_gen_len`. We use words as a sentencepiece-token proxy: real
-/// SP tokenization runs ~1.2–1.5 tokens/word for English, which the
-/// `GEN_SECONDS_PADDING` slack absorbs. Saturates at
-/// `MAX_FRAMES_HARD_CEILING` so we never *raise* the upstream default.
-fn estimate_max_frames(word_count: usize) -> i32 {
-    // Treat each word as ~1.3 tokens — within the slack envelope but a touch
-    // generous so we don't truncate genuine short utterances.
-    let approx_tokens = word_count as f32 * 1.3;
-    let gen_len_sec = approx_tokens / TOKENS_PER_SECOND_ESTIMATE + GEN_SECONDS_PADDING;
-    let frames = (gen_len_sec * MIMI_FRAME_RATE).ceil() as i32;
-    frames.clamp(1, MAX_FRAMES_HARD_CEILING)
+/// Build the `GenerationConfig.extra` HashMap from a [`PreparedPrompt`].
+///
+/// Centralised so the regression test below can assert that we **never**
+/// emit a `frames_after_eos` override — the previous attempt to override
+/// that knob (setting it to 1 for ≥5-word inputs) clipped the leading
+/// audio of multi-clause sentences (the "first 'yep' is static" bug on
+/// 2026-05-18). The upstream sherpa-onnx default of 3 is what we want, and
+/// the right way to keep it is to not set it at all.
+fn build_generation_extra(prepared: &PreparedPrompt) -> Option<HashMap<String, serde_json::Value>> {
+    prepared.max_frames.map(|mf| {
+        let mut h: HashMap<String, serde_json::Value> = HashMap::with_capacity(1);
+        h.insert("max_frames".to_string(), serde_json::Value::from(mf));
+        h
+    })
 }
 
 impl PocketTts {
@@ -358,19 +378,12 @@ impl PocketTts {
         };
 
         // Per-call generation hints sherpa-onnx forwards to
-        // `offline-tts-pocket-impl.h`. `frames_after_eos` is bumped for short
-        // prompts to give the model trailing room to gracefully decay; the
-        // adaptive `max_frames` is the safety net that bounds runaway
-        // generation when EOS never fires.
-        let mut extra: HashMap<String, serde_json::Value> = HashMap::with_capacity(2);
-        extra.insert(
-            "frames_after_eos".to_string(),
-            serde_json::Value::from(prepared.frames_after_eos),
-        );
-        extra.insert(
-            "max_frames".to_string(),
-            serde_json::Value::from(prepared.max_frames),
-        );
+        // `offline-tts-pocket-impl.h`. We only override `max_frames`, and
+        // only for short padded prompts where we have a tight expectation
+        // on output length — that bounds the original runaway without
+        // disturbing the rest of the LM sampling envelope. See
+        // `prepare_pocket_prompt` docs for the regression history.
+        let extra = build_generation_extra(&prepared);
 
         let cfg = GenerationConfig {
             speed,
@@ -378,7 +391,7 @@ impl PocketTts {
             silence_scale: SYNTH_SILENCE_SCALE,
             reference_audio: Some(style.samples.clone()),
             reference_sample_rate: style.sample_rate,
-            extra: Some(extra),
+            extra,
             ..Default::default()
         };
 
@@ -425,13 +438,15 @@ mod tests {
     fn prepare_prompt_pads_and_capitalizes_one_word() {
         // The "yep" case Tyler hit in production — bare lowercase one-word
         // utterance with no punctuation. Must be padded, capitalized, and
-        // terminated.
+        // terminated, with a tight `max_frames` cap to bound runaway gen.
         let out = prepare_pocket_prompt("yep").expect("non-empty");
         let pad = " ".repeat(SHORT_PROMPT_PAD_SPACES);
         assert_eq!(out.text, format!("{pad}Yep."));
-        assert_eq!(out.frames_after_eos, 3);
-        // 1 word → very low frame cap (well under the 500 hard ceiling).
-        assert!(out.max_frames < MAX_FRAMES_HARD_CEILING);
+        assert_eq!(out.max_frames, Some(SHORT_PROMPT_MAX_FRAMES));
+        assert!(
+            SHORT_PROMPT_MAX_FRAMES < SHERPA_ONNX_MAX_FRAMES_DEFAULT,
+            "short cap must be tighter than the upstream default"
+        );
     }
 
     #[test]
@@ -445,20 +460,24 @@ mod tests {
 
     #[test]
     fn prepare_prompt_threshold_is_inclusive_at_four_words() {
-        // 4 words = short (padded); 5 words = long (not padded).
+        // 4 words = short (padded + tight max_frames); 5 words = long
+        // (no padding, no overrides — upstream defaults stand).
         let four = prepare_pocket_prompt("one two three four").expect("non-empty");
         assert!(
             four.text.starts_with(' '),
             "four-word input should be padded"
         );
-        assert_eq!(four.frames_after_eos, 3);
+        assert_eq!(four.max_frames, Some(SHORT_PROMPT_MAX_FRAMES));
 
         let five = prepare_pocket_prompt("one two three four five").expect("non-empty");
         assert!(
             !five.text.starts_with(' '),
             "five-word input should NOT be padded"
         );
-        assert_eq!(five.frames_after_eos, 1);
+        assert_eq!(
+            five.max_frames, None,
+            "long inputs must leave sherpa-onnx's max_frames default in place"
+        );
     }
 
     #[test]
@@ -466,7 +485,7 @@ mod tests {
         let long = "This is a longer sentence that the model should handle just fine.";
         let out = prepare_pocket_prompt(long).expect("non-empty");
         assert!(!out.text.starts_with(' '));
-        assert_eq!(out.frames_after_eos, 1);
+        assert_eq!(out.max_frames, None);
         assert!(out.text.ends_with('.'));
     }
 
@@ -493,36 +512,86 @@ mod tests {
         assert!(out.text.contains("Дa."));
     }
 
-    // ── estimate_max_frames ──────────────────────────────────────────────────
+    // ── build_generation_extra ───────────────────────────────────────────────
+    //
+    // These tests pin down a behaviour we've now regressed twice on:
+    //   1) Not padding/punctuating short inputs → 40 s of "monster breathing"
+    //      (pre-773a2a1).
+    //   2) Setting `frames_after_eos = 1` on long inputs → clipped leading
+    //      audio of multi-clause sentences, e.g. "Yep, I can hear you. …"
+    //      came out as a static burst (the 773a2a1 regression Tyler hit on
+    //      2026-05-18 ~14:30 UTC).
+    //
+    // The contract we enforce going forward: we **only** override
+    // `max_frames`, and only for ≤4-word inputs. Every other knob is left
+    // at sherpa-onnx's documented default (notably `frames_after_eos = 3`).
 
     #[test]
-    fn estimate_max_frames_is_tight_for_short_input() {
-        // 1 word: 1 * 1.3 / 3.0 + 2.0 ≈ 2.43s ≈ 31 frames. Well below 500.
-        let frames = estimate_max_frames(1);
-        assert!(frames > 0);
-        assert!(frames < 50, "got {frames}");
+    fn build_extra_short_prompt_sets_only_max_frames() {
+        let prepared = prepare_pocket_prompt("yep").expect("non-empty");
+        let extra = build_generation_extra(&prepared).expect("short prompts get extra");
+        // Exactly one key — `max_frames` — and nothing else.
+        assert_eq!(extra.len(), 1, "extra has unexpected keys: {extra:?}");
+        assert_eq!(
+            extra.get("max_frames"),
+            Some(&serde_json::Value::from(SHORT_PROMPT_MAX_FRAMES))
+        );
+        assert!(
+            !extra.contains_key("frames_after_eos"),
+            "frames_after_eos must never be set — upstream default of {SHERPA_ONNX_FRAMES_AFTER_EOS_DEFAULT} is what we want"
+        );
     }
 
     #[test]
-    fn estimate_max_frames_saturates_at_ceiling() {
-        // 5000 words ≈ a runaway prompt; must clamp at the hard ceiling.
-        assert_eq!(estimate_max_frames(5_000), MAX_FRAMES_HARD_CEILING);
+    fn build_extra_long_prompt_is_none() {
+        // ≥5 words: no extras at all. This is the key fix for the "first
+        // 'yep' in 'Yep, I can hear you. …' is static" regression — we
+        // were previously forcing `frames_after_eos = 1` on this path.
+        let prepared = prepare_pocket_prompt("Yep, I can hear you.").expect("non-empty");
+        assert_eq!(
+            build_generation_extra(&prepared),
+            None,
+            "long prompts must not override any LM knob"
+        );
     }
 
     #[test]
-    fn estimate_max_frames_grows_with_word_count() {
-        let small = estimate_max_frames(2);
-        let medium = estimate_max_frames(20);
-        let large = estimate_max_frames(100);
-        assert!(small < medium);
-        assert!(medium < large);
-        assert!(large <= MAX_FRAMES_HARD_CEILING);
+    fn build_extra_never_lowers_frames_after_eos_for_any_word_count() {
+        // Sweep a range of prompt lengths and assert the `extra` map (when
+        // present) never carries a `frames_after_eos` override that's lower
+        // than the upstream sherpa-onnx default. Implemented as a structural
+        // check — we just never set the key — but worth a property test in
+        // case someone reintroduces the override in the future.
+        let prompts: &[&str] = &[
+            "hi",
+            "hi there",
+            "yes please",
+            "one two three four",
+            "one two three four five",
+            "a slightly longer reply, hopefully fine",
+            "This is a multi-clause sentence. It has two parts.",
+            "really really really really really long prompt with lots of words just to be sure",
+        ];
+        for &p in prompts {
+            let prepared = prepare_pocket_prompt(p).expect("non-empty");
+            if let Some(extra) = build_generation_extra(&prepared) {
+                if let Some(v) = extra.get("frames_after_eos") {
+                    let n = v.as_i64().expect("frames_after_eos should be int");
+                    assert!(
+                        n >= SHERPA_ONNX_FRAMES_AFTER_EOS_DEFAULT as i64,
+                        "prompt {p:?} set frames_after_eos={n}, below upstream default of {SHERPA_ONNX_FRAMES_AFTER_EOS_DEFAULT}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
-    fn estimate_max_frames_never_zero() {
-        // Sanity: even a 0-word prompt yields ≥1 frame so we never ask the
-        // engine for an impossible cap.
-        assert!(estimate_max_frames(0) >= 1);
+    fn short_prompt_max_frames_is_below_upstream_default() {
+        // Sanity: the override only ever *lowers* the cap, never raises it.
+        assert!(SHORT_PROMPT_MAX_FRAMES < SHERPA_ONNX_MAX_FRAMES_DEFAULT);
+        // …and is still large enough for a one-to-four-word reply. At Mimi's
+        // 12.5 Hz frame rate, 100 frames = 8 s, which is roomy.
+        assert!(SHORT_PROMPT_MAX_FRAMES >= 50, "would risk truncation");
     }
 }
