@@ -5,7 +5,7 @@
 //! ```text
 //! caller: pipeline.speak("Hello world. How are you?")
 //!   → bounded sync_channel (TEXT_QUEUE_DEPTH = 8)
-//!   → tts_worker thread (owns 1 Kokoro engine)
+//!   → tts_worker thread (owns 1 Pocket TTS engine)
 //!       1. Preprocess text
 //!       2. Split into sentences
 //!       3. Synthesize each sentence individually → f32 PCM
@@ -35,7 +35,7 @@ use std::{
     time::Duration,
 };
 
-use super::kokoro::{load_text_to_speech, load_voice_style, SAMPLE_RATE};
+use super::pocket::{load_text_to_speech, load_voice_style, SAMPLE_RATE, VOICE_FILE_EXT};
 use super::preprocessing::{preprocess_for_tts, split_sentences};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -48,21 +48,35 @@ const TEXT_QUEUE_DEPTH: usize = 8;
 /// How long the worker waits on the text channel before checking the shutdown flag.
 const RECV_TIMEOUT: Duration = Duration::from_millis(100);
 
-/// Kokoro ignores denoising steps (not a diffusion model). Kept for API compat.
+/// Pocket TTS is a one-step consistency model, not diffusion. Kept for API compat.
 const SYNTH_STEPS: usize = 1;
 
 /// Synthesis speed multiplier. Slightly faster than natural speech.
 const SYNTH_SPEED: f32 = 1.05;
 
-/// Volume boost applied after synthesis — Kokoro output is normalized.
-/// Start at 1.5 and tune empirically.
-const VOLUME_BOOST: f32 = 1.5;
+/// Target peak amplitude after per-sentence loudness normalization, in linear
+/// scale. −6 dBFS = 10^(−6/20) ≈ 0.501. Leaves 6 dB of headroom above the
+/// loudest sample so the subsequent fade-in/out and any system mixer gain
+/// don't have to soft-clip. See `normalize_for_playback`.
+const TARGET_PEAK: f32 = 0.501_187_2; // 10f32.powf(-6.0 / 20.0)
+
+/// Maximum gain applied by `normalize_for_playback`. Caps amplification on
+/// near-silent buffers so a mid-utterance pause or a malformed synth doesn't
+/// get amplified to full scale (which would surface any quantization noise).
+///
+/// Pocket TTS reference-voice output measured ~7.6% peak on a 75-character
+/// utterance (`examples/pocket_bench`); a gain of 1/0.076 ≈ 6.6 lands that
+/// sample at the −6 dBFS target, so `8.0` covers normal utterances while
+/// still catching pathological near-silent buffers.
+const MAX_GAIN: f32 = 8.0;
 
 /// Fade in/out length in samples (8ms at 24kHz ≈ 192 samples).
 /// Eliminates clicks/pops at sentence boundaries.
 const FADE_SAMPLES: usize = (SAMPLE_RATE as f64 * 0.008) as usize;
 
-/// Sentence-by-sentence synthesis for lower TTFA (≈200ms vs ≈600ms for 3-sentence batches).
+/// Sentence-by-sentence synthesis — keeps first-sentence latency low and lets
+/// playback of sentence N overlap with synthesis of sentence N+1 (see the
+/// lookahead pipelining note in the module doc-comment above).
 const BATCH_SIZE: usize = 1;
 
 /// Silence inserted between sentences by the TTS pipeline (seconds).
@@ -87,7 +101,7 @@ pub struct TtsPipeline {
     /// Kept alive here so the Arc isn't dropped — the worker holds a clone.
     #[allow(dead_code)]
     cancel: Arc<AtomicBool>,
-    /// Voice name (e.g. "af_heart"). Stored for future voice-switching support.
+    /// Voice name (e.g. "reference_sample"). Stored for future voice-switching support.
     #[allow(dead_code)]
     voice: String,
     /// Worker thread handle — taken on drop to join cleanly.
@@ -97,8 +111,8 @@ pub struct TtsPipeline {
 impl TtsPipeline {
     /// Spawn the TTS pipeline thread using the default voice.
     ///
-    /// `model_dir` must contain the Kokoro model files:
-    ///   `model_quantized.onnx`, `tokenizer.json`, `voices/<name>.bin`
+    /// `model_dir` must contain the Pocket TTS files declared by `huddle::models`
+    /// (the five ONNX sessions, the two JSON tables, and `<voice>.wav`).
     ///
     /// `tts_active` is set to `true` while audio is playing and `false` when idle.
     /// Pass the same `Arc` to the STT pipeline to gate microphone input.
@@ -112,11 +126,13 @@ impl TtsPipeline {
         cancel: Arc<AtomicBool>,
         output_device: Option<String>,
     ) -> Result<Self, String> {
-        use super::kokoro::DEFAULT_VOICE;
+        use super::pocket::DEFAULT_VOICE;
         Self::new_with_voice(model_dir, tts_active, cancel, DEFAULT_VOICE, output_device)
     }
 
-    /// Spawn the TTS pipeline thread with a specific voice name (e.g. `"af_heart"`, `"am_michael"`).
+    /// Spawn the TTS pipeline thread with a specific voice name. Today only the
+    /// bundled default voice (see `pocket::DEFAULT_VOICE`) is shipped; other
+    /// names will surface a clear error from `load_voice_style`.
     pub fn new_with_voice(
         model_dir: PathBuf,
         tts_active: Arc<AtomicBool>,
@@ -204,14 +220,14 @@ fn tts_worker(
     cancel: Arc<AtomicBool>,
     output_device: Option<String>,
 ) {
-    // ── 1. Initialise Kokoro engine ───────────────────────────────────────────
+    // ── 1. Initialise TTS engine ──────────────────────────────────────────────
     let model_dir_str = model_dir.to_string_lossy().to_string();
 
-    let mut engine = match load_text_to_speech(&model_dir_str) {
+    let engine = match load_text_to_speech(&model_dir_str) {
         Ok(e) => e,
         Err(e) => {
             eprintln!(
-                "sprout-desktop: TTS Kokoro init failed (model_dir={}): {e}. TTS disabled.",
+                "sprout-desktop: TTS engine init failed (model_dir={}): {e}. TTS disabled.",
                 model_dir.display()
             );
             drain_until_shutdown(text_rx, &shutdown);
@@ -220,7 +236,7 @@ fn tts_worker(
     };
 
     // ── 2. Load voice style ───────────────────────────────────────────────────
-    let voice_path = model_dir.join(format!("{voice_name}.bin"));
+    let voice_path = model_dir.join(format!("{voice_name}.{VOICE_FILE_EXT}"));
     let style = match load_voice_style(&voice_path) {
         Ok(s) => s,
         Err(e) => {
@@ -234,9 +250,9 @@ fn tts_worker(
 
     // ── 2b. Warmup inference ─────────────────────────────────────────────────
     // The first ONNX inference on any session is significantly slower than
-    // subsequent ones — it triggers JIT compilation, memory pool allocation,
-    // and (on CoreML) lazy model compilation. Run a short dummy synthesis and
-    // discard the output so the first real utterance runs at warm-session speed.
+    // subsequent ones — it can trigger native session initialization, memory
+    // pool allocation, and graph-specific caches. Run a short dummy synthesis
+    // and discard the output so the first real utterance runs at warm-session speed.
     {
         let t = std::time::Instant::now();
         match engine.synth_chunk("warmup", "en", &style, SYNTH_STEPS, SYNTH_SPEED) {
@@ -368,10 +384,7 @@ fn tts_worker(
 
             match engine.synth_chunk(text, "en", &style, SYNTH_STEPS, SYNTH_SPEED) {
                 Ok(samples) if !samples.is_empty() => {
-                    let mut boosted: Vec<f32> = samples
-                        .iter()
-                        .map(|&s| (s * VOLUME_BOOST).clamp(-1.0, 1.0))
-                        .collect();
+                    let mut boosted = normalize_for_playback(samples);
                     apply_fades(&mut boosted);
                     player.append(SamplesBuffer::new(channels, rate, boosted));
                     // Insert inter-sentence silence after each synthesized chunk.
@@ -437,6 +450,28 @@ fn handle_cancel_or_shutdown(
         return true;
     }
     false
+}
+
+/// Per-sentence peak normalization. Scales the buffer so its loudest sample
+/// lands at `TARGET_PEAK` (−6 dBFS), capped at `MAX_GAIN` to avoid amplifying
+/// near-silent buffers into quantization noise. Returns the input unchanged on
+/// empty input or pure-silence input.
+///
+/// Why normalize per-sentence rather than apply a fixed boost: Pocket TTS
+/// reference-voice output measured ~7.6% peak on one utterance, but per-
+/// sentence peak distribution isn't known in advance and may vary with text
+/// and any future voice swap. A fixed multiplier either clips loud sentences
+/// or under-amplifies quiet ones; normalization adapts.
+fn normalize_for_playback(samples: Vec<f32>) -> Vec<f32> {
+    let peak = samples.iter().fold(0.0_f32, |acc, &s| acc.max(s.abs()));
+    if peak == 0.0 {
+        return samples;
+    }
+    let gain = (TARGET_PEAK / peak).min(MAX_GAIN);
+    samples
+        .into_iter()
+        .map(|s| (s * gain).clamp(-1.0, 1.0))
+        .collect()
 }
 
 /// Apply a short linear fade-in at the start and fade-out at the end of `samples`.
@@ -1024,5 +1059,67 @@ mod tests {
         let mut samples = vec![1.0f32];
         apply_fades(&mut samples);
         assert_eq!(samples[0], 1.0);
+    }
+
+    // ── normalize_for_playback tests ──────────────────────────────────────────
+
+    /// A quiet buffer (peak well under TARGET_PEAK) is scaled up to TARGET_PEAK.
+    /// Reproduces the bench-measured Pocket TTS peak (~0.076) and asserts the
+    /// loudest sample lands at exactly the −6 dBFS target.
+    #[test]
+    fn normalize_for_playback_hits_target_on_quiet_buffer() {
+        // peak 0.076 ⇒ gain ≈ 6.6, well under MAX_GAIN (8.0), so target hit.
+        let input: Vec<f32> = (0..100).map(|i| 0.076 * (i as f32 / 100.0)).collect();
+        let out = normalize_for_playback(input);
+        let peak = out.iter().fold(0.0_f32, |a, &s| a.max(s.abs()));
+        assert!(
+            (peak - TARGET_PEAK).abs() < 1e-3,
+            "expected peak ~{TARGET_PEAK}, got {peak}"
+        );
+    }
+
+    /// A near-silent buffer would need a huge gain to reach TARGET_PEAK;
+    /// `MAX_GAIN` caps the amplification so we don't bring quantization noise
+    /// up to full scale.
+    #[test]
+    fn normalize_for_playback_caps_gain_on_near_silent_buffer() {
+        // peak 0.001 ⇒ ideal gain 501; MAX_GAIN caps it at 8.0, so the
+        // resulting peak is 0.001 × 8.0 = 0.008, NOT TARGET_PEAK.
+        let input = vec![0.001_f32, -0.001, 0.001];
+        let out = normalize_for_playback(input);
+        let peak = out.iter().fold(0.0_f32, |a, &s| a.max(s.abs()));
+        assert!(
+            (peak - 0.008).abs() < 1e-6,
+            "expected peak 0.008 (gain-capped), got {peak}"
+        );
+        assert!(peak < TARGET_PEAK);
+    }
+
+    /// A pure-silence buffer is returned unchanged — no division by zero, no
+    /// amplification of nothing.
+    #[test]
+    fn normalize_for_playback_silence_is_unchanged() {
+        let input = vec![0.0_f32; 16];
+        let out = normalize_for_playback(input);
+        assert!(out.iter().all(|&s| s == 0.0));
+        assert_eq!(out.len(), 16);
+    }
+
+    /// Empty input round-trips to empty output. No panic on `peak == 0` path.
+    #[test]
+    fn normalize_for_playback_empty_buffer() {
+        let out = normalize_for_playback(Vec::new());
+        assert!(out.is_empty());
+    }
+
+    /// A buffer that would otherwise clip after gain is hard-clamped to ±1.0.
+    /// Belt-and-suspenders: `gain * peak` shouldn't exceed TARGET_PEAK by
+    /// construction, but the `.clamp(-1.0, 1.0)` is still asserted here in case
+    /// future changes loosen TARGET_PEAK or MAX_GAIN past full scale.
+    #[test]
+    fn normalize_for_playback_clamps_to_full_scale() {
+        let input = vec![10.0_f32, -10.0]; // already past full scale before gain
+        let out = normalize_for_playback(input);
+        assert!(out.iter().all(|&s| s.abs() <= 1.0));
     }
 }
