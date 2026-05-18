@@ -36,7 +36,7 @@ import { UserAvatar } from "@/shared/ui/UserAvatar";
 type PulseTab = "search" | "foryou" | "people" | "agents" | "mine";
 
 const tabTriggerClassName =
-  "h-6 rounded-full px-3 py-0 text-[11px] font-semibold shadow-none transition-colors !text-muted-foreground hover:!text-foreground data-[state=active]:bg-background data-[state=active]:!text-foreground data-[state=active]:shadow-sm dark:!text-white/35 dark:hover:!text-white/70 dark:data-[state=active]:!text-white";
+  "h-7 rounded-full px-3.5 py-0 text-xs font-semibold shadow-none transition-colors !text-muted-foreground hover:!text-foreground data-[state=active]:bg-background data-[state=active]:!text-foreground data-[state=active]:shadow-sm dark:!text-white/35 dark:hover:!text-white/70 dark:data-[state=active]:!text-white";
 
 type PulseViewProps = {
   currentPubkey?: string;
@@ -345,13 +345,13 @@ export function PulseView({ currentPubkey }: PulseViewProps) {
         <div className="shrink-0 px-4 pt-11 sm:px-6">
           <div className="relative mx-auto flex w-full max-w-2xl items-center justify-center">
             <div className="flex items-center">
-              <TabsList className="h-7 gap-0.5 rounded-full border border-border/50 bg-muted/40 p-0.5">
+              <TabsList className="h-8 gap-0.5 rounded-full border border-border/50 bg-muted/40 p-0.5">
                 <TabsTrigger
                   aria-label="Search Pulse"
                   value="search"
-                  className="h-6 w-6 rounded-full p-0 !text-muted-foreground shadow-none transition-colors hover:!text-foreground data-[state=active]:bg-background data-[state=active]:!text-foreground data-[state=active]:shadow-sm dark:!text-white/35 dark:hover:!text-white/70 dark:data-[state=active]:!text-white"
+                  className="h-7 w-7 rounded-full p-0 !text-muted-foreground shadow-none transition-colors hover:!text-foreground data-[state=active]:bg-background data-[state=active]:!text-foreground data-[state=active]:shadow-sm dark:!text-white/35 dark:hover:!text-white/70 dark:data-[state=active]:!text-white"
                 >
-                  <Search className="h-3.5 w-3.5" />
+                  <Search className="h-4 w-4" />
                 </TabsTrigger>
                 <TabsTrigger value="foryou" className={tabTriggerClassName}>
                   Everyone
