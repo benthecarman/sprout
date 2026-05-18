@@ -143,10 +143,12 @@ desktop-light-build target="aarch64-apple-darwin":
     touch "desktop/src-tauri/binaries/sprout-dev-mcp-$TARGET"
     touch "desktop/src-tauri/binaries/git-credential-nostr-$TARGET"
     pnpm install
+    # tauri-cli forwards args after `--` to cargo, so --no-default-features
+    # goes after the separator.
     cd {{desktop_dir}} && VITE_SPROUT_HUDDLE=0 pnpm tauri build \
         --target {{target}} \
-        --no-default-features \
-        --config src-tauri/tauri.light.conf.json
+        --config src-tauri/tauri.light.conf.json \
+        -- --no-default-features
 
 # Run desktop checks suitable for CI / pre-push (full + light)
 desktop-ci: desktop-check desktop-tauri-fmt-check desktop-build desktop-tauri-check desktop-light-check
@@ -228,11 +230,14 @@ desktop-light *ARGS: _ensure-sidecar-stubs
     [[ -d node_modules ]] || pnpm install
     source ../scripts/instance-env.sh
     echo "Starting LIGHT (no huddle) on Vite port ${SPROUT_VITE_PORT}, relay ${SPROUT_RELAY_URL}"
+    # tauri-cli forwards args after `--` to cargo, so --no-default-features
+    # goes after the separator. User-supplied {{ARGS}} go before it so they
+    # reach the tauri sub-command (e.g. --release, --no-watch).
     VITE_SPROUT_HUDDLE=0 pnpm exec tauri dev \
         --config "$SPROUT_TAURI_CONFIG" \
         --config src-tauri/tauri.light.conf.json \
-        --no-default-features \
-        {{ARGS}}
+        {{ARGS}} \
+        -- --no-default-features
 
 # Run the desktop app against the internal staging relay (installs deps + builds agent tools automatically)
 staging *ARGS: _ensure-sidecar-stubs
