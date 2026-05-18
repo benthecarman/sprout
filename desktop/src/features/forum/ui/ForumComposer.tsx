@@ -13,20 +13,16 @@ import {
   normalizeMentionClipboardHtml,
 } from "@/features/messages/lib/normalizeMentionClipboard";
 import { useRichTextEditor } from "@/features/messages/lib/useRichTextEditor";
-import { ChannelAutocomplete } from "@/features/messages/ui/ChannelAutocomplete";
-import {
-  ComposerAttachments,
-  DropZoneOverlay,
-} from "@/features/messages/ui/ComposerAttachments";
-import {
-  MentionAutocomplete,
-  type MentionSuggestion,
-} from "@/features/messages/ui/MentionAutocomplete";
+import { DropZoneOverlay } from "@/features/messages/ui/ComposerAttachments";
+import type { MentionSuggestion } from "@/features/messages/ui/MentionAutocomplete";
 import { MessageComposerToolbar } from "@/features/messages/ui/MessageComposerToolbar";
 import type { ChannelMember } from "@/shared/api/types";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import { Button } from "@/shared/ui/button";
 import { cn } from "@/shared/lib/cn";
+import { ForumComposerAutocompletes } from "./ForumComposerAutocompletes";
+import { ForumComposerCompactLayout } from "./ForumComposerCompactLayout";
+import { ForumComposerMediaStatus } from "./ForumComposerMediaStatus";
 
 type ForumComposerProps = {
   channelId?: string | null;
@@ -43,6 +39,8 @@ type ForumComposerProps = {
     mentionPubkeys: string[],
     mediaTags?: string[][],
   ) => undefined | Promise<unknown>;
+  /** Render as a single-line composer until the user focuses it. */
+  compact?: boolean;
   /** When true, autocomplete renders below the input (for top-of-view composers). */
   autocompleteBelow?: boolean;
   profiles?: UserProfileLookup;
@@ -58,6 +56,7 @@ export function ForumComposer({
   isSending,
   onCancel,
   onSubmit,
+  compact = false,
   autocompleteBelow = false,
   profiles,
 }: ForumComposerProps) {
@@ -65,6 +64,7 @@ export function ForumComposer({
   const contentRef = React.useRef(content);
   contentRef.current = content;
 
+  const [isCompactExpanded, setIsCompactExpanded] = React.useState(!compact);
   const [isEmojiPickerOpen, setIsEmojiPickerOpen] = React.useState(false);
   const [isFormattingOpen, setIsFormattingOpen] = React.useState(false);
 
@@ -107,7 +107,6 @@ export function ForumComposer({
     },
   });
 
-  // ── Mention / channel autocomplete insertion ────────────────────────
   const applyMentionInsert = React.useCallback(
     (suggestion: MentionSuggestion) => {
       const { text, cursor } = richText.getTextAndCursor();
@@ -138,7 +137,6 @@ export function ForumComposer({
     ],
   );
 
-  // ── Emoji insertion ─────────────────────────────────────────────────
   const insertEmoji = React.useCallback(
     (emoji: string) => {
       if (!richText.editor) return;
@@ -228,17 +226,24 @@ export function ForumComposer({
     setIsEmojiPickerOpen(false);
 
     const result = onSubmitRef.current(finalContent, pubkeys, mediaTags);
+    const collapseCompactComposer = () => {
+      if (compact) setIsCompactExpanded(false);
+    };
 
     // If onSubmit returns a promise, restore draft on failure.
     if (result && typeof result.then === "function") {
-      result.catch(() => {
+      result.then(collapseCompactComposer).catch(() => {
         setContent(savedContent);
         contentRef.current = savedContent;
         richText.setContent(savedContent);
         media.setPendingImeta(savedImeta);
+        if (compact) setIsCompactExpanded(true);
       });
+    } else {
+      collapseCompactComposer();
     }
   }, [
+    compact,
     media.pendingImetaRef,
     media.setPendingImeta,
     mentions.extractMentionPubkeys,
@@ -327,113 +332,168 @@ export function ForumComposer({
     });
   }, [richText.editor]);
 
-  // ── Send button state ───────────────────────────────────────────────
   const sendDisabled = React.useMemo(
     () =>
       disabled ||
       (content.trim().length === 0 && media.pendingImeta.length === 0),
     [disabled, content, media.pendingImeta.length],
   );
-
   const handlePaperclipClick = React.useCallback(() => {
     void media.handlePaperclip();
   }, [media.handlePaperclip]);
+  const expandCompactComposer = React.useCallback(() => {
+    if (compact) setIsCompactExpanded(true);
+  }, [compact]);
+  const hasComposerContent =
+    content.trim().length > 0 ||
+    media.pendingImeta.length > 0 ||
+    media.isUploading ||
+    media.uploadState.status === "error";
+  const isExpanded =
+    !compact ||
+    isCompactExpanded ||
+    hasComposerContent ||
+    isEmojiPickerOpen ||
+    isFormattingOpen ||
+    mentions.isMentionOpen ||
+    channelLinks.isChannelOpen;
+  const isCompactLayout = compact && !isExpanded;
+  const handleFormBlur = React.useCallback(
+    (event: React.FocusEvent<HTMLFormElement>) => {
+      if (!compact) return;
 
-  // ── Render ──────────────────────────────────────────────────────────
+      const nextTarget = event.relatedTarget;
+      if (
+        nextTarget instanceof Node &&
+        event.currentTarget.contains(nextTarget)
+      ) {
+        return;
+      }
+
+      const hasDraft =
+        contentRef.current.trim().length > 0 ||
+        media.pendingImetaRef.current.length > 0 ||
+        media.isUploading ||
+        media.uploadState.status === "error" ||
+        isEmojiPickerOpen ||
+        isFormattingOpen;
+
+      if (!hasDraft) setIsCompactExpanded(false);
+    },
+    [
+      compact,
+      isEmojiPickerOpen,
+      isFormattingOpen,
+      media.isUploading,
+      media.pendingImetaRef,
+      media.uploadState.status,
+    ],
+  );
+  const wasCompactExpandedRef = React.useRef(isCompactExpanded);
+  React.useEffect(() => {
+    const wasExpanded = wasCompactExpandedRef.current;
+    wasCompactExpandedRef.current = isCompactExpanded;
+
+    if (!compact || !isCompactExpanded || wasExpanded) return;
+
+    const frame = window.requestAnimationFrame(() => {
+      richText.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [compact, isCompactExpanded, richText.focus]);
   const autocompletePosition = autocompleteBelow ? "below" : "above";
-
   return (
     <form
       className={cn(
         "relative rounded-2xl border border-input bg-card px-3 py-2 sm:px-4",
         className,
       )}
-      onDragEnter={media.handleDragEnter}
+      onBlurCapture={handleFormBlur}
+      onDragEnter={(event) => {
+        expandCompactComposer();
+        media.handleDragEnter(event);
+      }}
       onDragLeave={media.handleDragLeave}
       onDragOver={media.handleDragOver}
       onDrop={(e) => {
         void media.handleDrop(e);
       }}
+      onFocusCapture={expandCompactComposer}
       onSubmit={handleSubmit}
     >
       {media.isDragOver && <DropZoneOverlay />}
-      {header ? <div className="mb-2">{header}</div> : null}
-      <ChannelAutocomplete
-        onSelect={applyChannelInsert}
-        position={autocompletePosition}
-        selectedIndex={channelLinks.channelSelectedIndex}
-        suggestions={
-          channelLinks.isChannelOpen ? channelLinks.channelSuggestions : []
-        }
-      />
-      <MentionAutocomplete
-        onSelect={applyMentionInsert}
-        position={autocompletePosition}
-        selectedIndex={mentions.mentionSelectedIndex}
-        suggestions={mentions.isMentionOpen ? mentions.suggestions : []}
-      />
-
-      {media.uploadState.status === "error" ? (
-        <div className="mb-2 rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive">
-          Upload failed: {media.uploadState.message}
-          <button
-            className="ml-2 underline"
-            onClick={() => media.setUploadState({ status: "idle" })}
-            type="button"
-          >
-            Dismiss
-          </button>
-        </div>
-      ) : null}
-
-      {(media.pendingImeta.length > 0 || media.isUploading) && (
-        <div className="mb-2 flex items-center gap-2">
-          <ComposerAttachments
-            attachments={media.pendingImeta}
-            isUploading={media.isUploading}
-            uploadingCount={media.uploadingCount}
-            onRemove={media.removeAttachment}
-          />
-        </div>
-      )}
-
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: keydown handler bridges Tiptap editor to autocomplete and submit */}
-      <div
-        className="rich-text-composer max-h-32 overflow-y-auto"
-        onKeyDown={handleEditorKeyDown}
-      >
-        <EditorContent editor={richText.editor} />
-      </div>
-
-      <MessageComposerToolbar
-        composerDisabled={disabled ?? false}
-        editor={richText.editor}
-        extraActions={
-          onCancel ? (
-            <Button
-              disabled={isSending}
-              onClick={onCancel}
-              size="sm"
-              type="button"
-              variant="ghost"
+      {isCompactLayout ? (
+        <ForumComposerCompactLayout
+          editor={richText.editor}
+          header={header}
+          isSending={isSending}
+          onEditorKeyDown={handleEditorKeyDown}
+          sendDisabled={sendDisabled}
+        />
+      ) : (
+        <>
+          {header ? (
+            <div
+              className={cn("mb-2", compact && "flex min-h-10 items-center")}
             >
-              Cancel
-            </Button>
-          ) : undefined
-        }
-        formattingDisabled={disabled ?? false}
-        isEmojiPickerOpen={isEmojiPickerOpen}
-        isFormattingOpen={isFormattingOpen}
-        isSending={isSending ?? false}
-        isUploading={media.isUploading}
-        onCaptureSelection={() => {}}
-        onEmojiPickerOpenChange={setIsEmojiPickerOpen}
-        onEmojiSelect={insertEmoji}
-        onFormattingToggle={handleFormattingToggle}
-        onOpenMentionPicker={openMentionPicker}
-        onPaperclip={handlePaperclipClick}
-        sendDisabled={sendDisabled}
-      />
+              {header}
+            </div>
+          ) : null}
+          <ForumComposerAutocompletes
+            channelSelectedIndex={channelLinks.channelSelectedIndex}
+            channelSuggestions={
+              channelLinks.isChannelOpen ? channelLinks.channelSuggestions : []
+            }
+            mentionSelectedIndex={mentions.mentionSelectedIndex}
+            mentionSuggestions={
+              mentions.isMentionOpen ? mentions.suggestions : []
+            }
+            onChannelSelect={applyChannelInsert}
+            onMentionSelect={applyMentionInsert}
+            position={autocompletePosition}
+          />
+
+          <ForumComposerMediaStatus media={media} />
+
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: keydown handler bridges Tiptap editor to autocomplete and submit */}
+          <div
+            className="rich-text-composer max-h-32 overflow-y-auto"
+            onKeyDown={handleEditorKeyDown}
+          >
+            <EditorContent editor={richText.editor} />
+          </div>
+
+          <MessageComposerToolbar
+            composerDisabled={disabled ?? false}
+            editor={richText.editor}
+            extraActions={
+              onCancel ? (
+                <Button
+                  disabled={isSending}
+                  onClick={onCancel}
+                  size="sm"
+                  type="button"
+                  variant="ghost"
+                >
+                  Cancel
+                </Button>
+              ) : undefined
+            }
+            formattingDisabled={disabled ?? false}
+            isEmojiPickerOpen={isEmojiPickerOpen}
+            isFormattingOpen={isFormattingOpen}
+            isSending={isSending ?? false}
+            isUploading={media.isUploading}
+            onCaptureSelection={() => {}}
+            onEmojiPickerOpenChange={setIsEmojiPickerOpen}
+            onEmojiSelect={insertEmoji}
+            onFormattingToggle={handleFormattingToggle}
+            onOpenMentionPicker={openMentionPicker}
+            onPaperclip={handlePaperclipClick}
+            sendDisabled={sendDisabled}
+          />
+        </>
+      )}
     </form>
   );
 }

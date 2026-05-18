@@ -396,14 +396,10 @@ export function PulseView({ currentPubkey }: PulseViewProps) {
             {activeTab === "search" ? (
               <div className="flex min-h-[56vh] items-center justify-center">
                 <div className="relative flex w-full max-w-xl flex-col items-center px-2">
-                  <div className="pointer-events-none absolute -inset-x-24 -inset-y-20 rounded-full bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.10),rgba(255,255,255,0)_56%)] opacity-80" />
-                  <img
-                    alt="Sprout"
-                    className="mb-7 h-16 w-16 object-contain opacity-95 dark:invert"
-                    src="/sprout.svg"
-                  />
+                  <h2 className="mb-5 text-center text-2xl font-semibold tracking-tight text-foreground">
+                    Search Pulse
+                  </h2>
                   <div className="relative w-full max-w-lg">
-                    <div className="pointer-events-none absolute -inset-2 rounded-full bg-foreground/[0.03] blur-md dark:bg-white/[0.08]" />
                     <div className="relative rounded-full border border-foreground/10 bg-background/80 p-1 shadow-[0_12px_48px_rgba(0,0,0,0.12)] backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.04] dark:shadow-[0_16px_70px_rgba(0,0,0,0.55)]">
                       <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground dark:text-white/55" />
                       <Input
@@ -437,13 +433,17 @@ export function PulseView({ currentPubkey }: PulseViewProps) {
                 <ForumComposer
                   autocompleteBelow
                   className="pulse-composer rounded-xl border-border/60 bg-muted/30 p-2 shadow-none"
+                  compact
                   header={
-                    <div className="pt-1">
+                    <div className="flex min-w-0 items-center gap-2">
                       <UserAvatar
                         avatarUrl={currentProfile?.avatarUrl ?? null}
                         className="!h-7 !w-7 shrink-0"
                         displayName={currentDisplayName}
                       />
+                      <span className="max-w-32 truncate text-sm font-medium text-foreground">
+                        {currentDisplayName}
+                      </span>
                     </div>
                   }
                   members={pulseMentionMembers}
