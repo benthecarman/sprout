@@ -324,6 +324,12 @@ export function PulseView({ currentPubkey }: PulseViewProps) {
           currentUserDisplayName={currentDisplayName}
           currentUserProfile={currentProfile}
           isAgent={agentPubkeySet.has(note.pubkey)}
+          isFollowPending={
+            (followMutation.isPending &&
+              followMutation.variables === note.pubkey) ||
+            (unfollowMutation.isPending &&
+              unfollowMutation.variables === note.pubkey)
+          }
           isFollowing={followingSet.has(note.pubkey)}
           isOwnNote={note.pubkey === currentPubkey}
           key={note.id}

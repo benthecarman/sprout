@@ -1,5 +1,6 @@
 import * as React from "react";
 import { Activity } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useUserProfileQuery } from "@/features/profile/hooks";
 import {
@@ -12,6 +13,9 @@ import { PresenceBadge } from "@/features/presence/ui/PresenceBadge";
 import { rewriteRelayUrl } from "@/shared/lib/mediaUrl";
 import { useAgentSession } from "@/shared/context/AgentSessionContext";
 import { useProfilePanel } from "@/shared/context/ProfilePanelContext";
+import { useIdentityQuery } from "@/shared/api/hooks";
+import { getContactList, setContactList } from "@/shared/api/social";
+import type { ContactEntry } from "@/shared/api/socialTypes";
 
 import { Popover, PopoverAnchor, PopoverContent } from "@/shared/ui/popover";
 import { BotIdenticon } from "@/features/messages/ui/BotIdenticon";
@@ -20,6 +24,7 @@ type UserProfilePopoverProps = {
   children: React.ReactNode;
   pubkey: string;
   triggerElement?: "div" | "span";
+  actions?: React.ReactNode;
   /** When set to "bot", a BotIdenticon badge renders next to the display name. */
   role?: string;
   /** Value used to generate the BotIdenticon glyph (typically the author name). */
@@ -56,10 +61,102 @@ function truncatePubkey(pubkey: string) {
   return `${pubkey.slice(0, 8)}…${pubkey.slice(-8)}`;
 }
 
+function useProfileFollowAction(pubkey: string, open: boolean) {
+  const queryClient = useQueryClient();
+  const identityQuery = useIdentityQuery();
+  const currentPubkey = identityQuery.data?.pubkey;
+  const isSelf =
+    Boolean(currentPubkey) &&
+    currentPubkey?.toLowerCase() === pubkey.toLowerCase();
+  const contactListQuery = useQuery({
+    queryKey: ["contact-list", currentPubkey ?? ""],
+    queryFn: () => getContactList(currentPubkey ?? ""),
+    enabled: open && Boolean(currentPubkey) && !isSelf,
+    staleTime: 60_000,
+    gcTime: 5 * 60_000,
+  });
+  const contacts = contactListQuery.data?.contacts ?? [];
+  const isFollowing = contacts.some(
+    (contact) => contact.pubkey.toLowerCase() === pubkey.toLowerCase(),
+  );
+
+  const followMutation = useMutation({
+    mutationFn: async () => {
+      if (!currentPubkey) throw new Error("No identity");
+      const current = await getContactList(currentPubkey);
+      const latestContacts = current?.contacts ?? [];
+      if (
+        latestContacts.some(
+          (contact) => contact.pubkey.toLowerCase() === pubkey.toLowerCase(),
+        )
+      ) {
+        return;
+      }
+      const updated: ContactEntry[] = [...latestContacts, { pubkey }];
+      return setContactList(updated);
+    },
+    onSuccess: () => {
+      if (!currentPubkey) return;
+      void queryClient.invalidateQueries({
+        queryKey: ["contact-list", currentPubkey],
+      });
+      void queryClient.invalidateQueries({ queryKey: ["pulse-timeline"] });
+    },
+  });
+
+  const unfollowMutation = useMutation({
+    mutationFn: async () => {
+      if (!currentPubkey) throw new Error("No identity");
+      const current = await getContactList(currentPubkey);
+      const updated = (current?.contacts ?? []).filter(
+        (contact) => contact.pubkey.toLowerCase() !== pubkey.toLowerCase(),
+      );
+      return setContactList(updated);
+    },
+    onSuccess: () => {
+      if (!currentPubkey) return;
+      void queryClient.invalidateQueries({
+        queryKey: ["contact-list", currentPubkey],
+      });
+      void queryClient.invalidateQueries({ queryKey: ["pulse-timeline"] });
+    },
+  });
+
+  if (!currentPubkey || isSelf) return null;
+
+  return (
+    <button
+      className={`min-w-20 rounded-full px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+        isFollowing
+          ? "border border-border/70 bg-background text-foreground hover:bg-muted"
+          : "bg-foreground text-background hover:bg-foreground/90"
+      } disabled:cursor-not-allowed disabled:opacity-60`}
+      disabled={followMutation.isPending || unfollowMutation.isPending}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (isFollowing) {
+          unfollowMutation.mutate();
+        } else {
+          followMutation.mutate();
+        }
+      }}
+      type="button"
+    >
+      {followMutation.isPending || unfollowMutation.isPending
+        ? "Updating..."
+        : isFollowing
+          ? "Following"
+          : "Follow"}
+    </button>
+  );
+}
+
 export function UserProfilePopover({
   children,
   pubkey,
   triggerElement = "div",
+  actions,
   role,
   botIdenticonValue,
 }: UserProfilePopoverProps) {
@@ -89,6 +186,8 @@ export function UserProfilePopover({
   const profile = profileQuery.data;
   const presenceStatus = presenceQuery.data?.[pubkey.toLowerCase()];
   const userStatus = userStatusQuery.data?.[pubkey.toLowerCase()];
+  const defaultFollowAction = useProfileFollowAction(pubkey, open);
+  const profileActions = actions ?? defaultFollowAction;
 
   const clearHoverTimer = React.useCallback(() => {
     if (hoverTimerRef.current !== null) {
@@ -208,7 +307,12 @@ export function UserProfilePopover({
               ) : null}
             </div>
 
-            {presenceStatus ? <PresenceBadge status={presenceStatus} /> : null}
+            <div className="ml-auto flex shrink-0 items-center gap-2">
+              {profileActions}
+              {presenceStatus ? (
+                <PresenceBadge status={presenceStatus} />
+              ) : null}
+            </div>
           </div>
 
           {userStatus ? (

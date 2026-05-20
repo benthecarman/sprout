@@ -9,6 +9,7 @@ import {
 } from "@/shared/api/social";
 import type {
   ContactListResponse,
+  ContactEntry,
   UserNotesResponse,
 } from "@/shared/api/socialTypes";
 
@@ -26,7 +27,7 @@ export const pulseQueryKeys = {
 // ── Contact list ────────────────────────────────────────────────────────────
 
 export function useContactListQuery(pubkey?: string) {
-  return useQuery<ContactListResponse>({
+  return useQuery<ContactListResponse | null>({
     queryKey: pulseQueryKeys.contactList(pubkey ?? ""),
     // biome-ignore lint/style/noNonNullAssertion: guarded by enabled: !!pubkey
     queryFn: () => getContactList(pubkey!),
@@ -109,10 +110,11 @@ export function useFollowMutation(currentPubkey?: string) {
       if (!currentPubkey) throw new Error("No identity");
       // Fresh read to avoid overwriting concurrent mutations.
       const current = await getContactList(currentPubkey);
-      if (current.contacts.some((c) => c.pubkey === targetPubkey)) {
+      const contacts = current?.contacts ?? [];
+      if (contacts.some((c) => c.pubkey === targetPubkey)) {
         return; // already following
       }
-      const updated = [...current.contacts, { pubkey: targetPubkey }];
+      const updated: ContactEntry[] = [...contacts, { pubkey: targetPubkey }];
       return setContactList(updated);
     },
     onSuccess: () => {
@@ -136,7 +138,9 @@ export function useUnfollowMutation(currentPubkey?: string) {
       if (!currentPubkey) throw new Error("No identity");
       // Fresh read to avoid overwriting concurrent mutations.
       const current = await getContactList(currentPubkey);
-      const updated = current.contacts.filter((c) => c.pubkey !== targetPubkey);
+      const updated = (current?.contacts ?? []).filter(
+        (c) => c.pubkey !== targetPubkey,
+      );
       return setContactList(updated);
     },
     onSuccess: () => {

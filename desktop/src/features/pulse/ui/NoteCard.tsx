@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import * as React from "react";
 
+import { UserProfilePopover } from "@/features/profile/ui/UserProfilePopover";
 import type { UserNote } from "@/shared/api/socialTypes";
 import type { UserProfileSummary } from "@/shared/api/types";
 import { Markdown } from "@/shared/ui/markdown";
@@ -25,6 +26,7 @@ type NoteCardProps = {
   isAgent?: boolean;
   isOwnNote: boolean;
   isFollowing: boolean;
+  isFollowPending?: boolean;
   onFollow?: (pubkey: string) => void;
   onReply?: (note: UserNote) => void;
   onShare?: (note: UserNote) => void;
@@ -54,6 +56,7 @@ export function NoteCard({
   isAgent,
   isOwnNote,
   isFollowing,
+  isFollowPending,
   onFollow,
   onReply,
   onShare,
@@ -71,6 +74,27 @@ export function NoteCard({
   const activeActionClass = "text-foreground";
   const countPlaceholder = <span aria-hidden className="w-2.5" />;
   const currentUserAvatarUrl = currentUserProfile?.avatarUrl ?? null;
+  const renderProfilePopoverActions = () =>
+    !isOwnNote ? (
+      <button
+        className={`min-w-20 rounded-full px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+          isFollowing
+            ? "border border-border/70 bg-background text-foreground hover:bg-muted"
+            : "bg-foreground text-background hover:bg-foreground/90"
+        } disabled:cursor-not-allowed disabled:opacity-60`}
+        disabled={isFollowPending}
+        onClick={() => {
+          if (isFollowing) {
+            onUnfollow?.(note.pubkey);
+          } else {
+            onFollow?.(note.pubkey);
+          }
+        }}
+        type="button"
+      >
+        {isFollowPending ? "Updating..." : isFollowing ? "Following" : "Follow"}
+      </button>
+    ) : null;
 
   React.useEffect(() => {
     if (!isReplyComposerOpen) return;
@@ -86,22 +110,37 @@ export function NoteCard({
 
   return (
     <article className="flex items-start gap-2.5 rounded-2xl px-1 pb-1 pt-4 sm:px-2">
-      <div className="relative shrink-0">
-        <UserAvatar
-          avatarUrl={avatarUrl}
-          className="!h-9 !w-9 shrink-0"
-          displayName={displayName}
-        />
-        {isAgent ? (
-          <Bot className="absolute -bottom-0.5 -right-0.5 h-3.5 w-3.5 rounded-full bg-background p-0.5 text-muted-foreground" />
-        ) : null}
-      </div>
+      <UserProfilePopover
+        actions={renderProfilePopoverActions()}
+        botIdenticonValue={displayName}
+        pubkey={note.pubkey}
+        role={isAgent ? "bot" : undefined}
+      >
+        <div className="relative shrink-0 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          <UserAvatar
+            avatarUrl={avatarUrl}
+            className="!h-9 !w-9 shrink-0"
+            displayName={displayName}
+          />
+          {isAgent ? (
+            <Bot className="absolute -bottom-0.5 -right-0.5 h-3.5 w-3.5 rounded-full bg-background p-0.5 text-muted-foreground" />
+          ) : null}
+        </div>
+      </UserProfilePopover>
 
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0">
-          <span className="truncate text-sm font-semibold leading-none tracking-tight">
-            {displayName}
-          </span>
+          <UserProfilePopover
+            actions={renderProfilePopoverActions()}
+            botIdenticonValue={displayName}
+            pubkey={note.pubkey}
+            role={isAgent ? "bot" : undefined}
+            triggerElement="span"
+          >
+            <span className="truncate text-sm font-semibold leading-none tracking-tight hover:underline">
+              {displayName}
+            </span>
+          </UserProfilePopover>
           {isAgent ? (
             <span className="inline-flex h-4 items-center rounded bg-muted px-1 text-[10px] font-medium text-muted-foreground">
               bot
@@ -164,25 +203,6 @@ export function NoteCard({
             >
               <PenSquare className="h-4 w-4" />
             </button>
-            {!isOwnNote ? (
-              isFollowing ? (
-                <button
-                  className="text-muted-foreground/60 transition-colors hover:text-foreground hover:underline focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  onClick={() => onUnfollow?.(note.pubkey)}
-                  type="button"
-                >
-                  Unfollow
-                </button>
-              ) : (
-                <button
-                  className="text-muted-foreground/60 transition-colors hover:text-foreground hover:underline focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  onClick={() => onFollow?.(note.pubkey)}
-                  type="button"
-                >
-                  Follow
-                </button>
-              )
-            ) : null}
           </div>
           <button
             aria-label={isBookmarked ? "Remove bookmark" : "Save"}

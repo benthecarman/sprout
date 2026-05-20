@@ -94,10 +94,21 @@ export async function publishNote(
 
 export async function getContactList(
   pubkey: string,
-): Promise<ContactListResponse> {
-  const raw = await invokeTauri<RawContactListResponse>("get_contact_list", {
-    pubkey,
-  });
+): Promise<ContactListResponse | null> {
+  let raw: RawContactListResponse;
+  try {
+    raw = await invokeTauri<RawContactListResponse>("get_contact_list", {
+      pubkey,
+    });
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message.toLowerCase().includes("contact list not found")
+    ) {
+      return null;
+    }
+    throw error;
+  }
 
   // Parse p-tags into contact entries.
   const contacts = raw.tags
