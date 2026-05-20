@@ -56,7 +56,7 @@ redis        = { version = "0.27", features = ["tokio-comp", "connection-manager
 deadpool-redis = { version = "0.18", features = ["rt_tokio_1"] }
 
 # Nostr
-nostr = { version = "0.36" }
+nostr = { version = "0.44" }
 
 # Serialization
 serde       = { version = "1", features = ["derive"] }
