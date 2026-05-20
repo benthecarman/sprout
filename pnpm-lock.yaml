@@ -5,9 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
-  isomorphic-git:
-    hash: 5b43d4f88847fa3640b2babcef47638b012883aff16efacd3818d29bfa690cb1
-    path: patches/isomorphic-git.patch
+  isomorphic-git: 5b43d4f88847fa3640b2babcef47638b012883aff16efacd3818d29bfa690cb1
 
 importers:
 
